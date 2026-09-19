@@ -1,0 +1,73 @@
+#!/bin/bash
+set -e
+
+USER=cacheproxy
+GROUP=cacheproxy
+
+# Created before the user, so adduser's --home reference actually exists
+# (cosmetic -- it works either order since --no-create-home is set, but
+# skips a spurious "home dir can't be accessed" warning at install time).
+mkdir -p /var/lib/cache-proxy/files /var/lib/cache-proxy/mitmproxy-ca
+
+if ! getent group "$GROUP" >/dev/null; then
+  addgroup --system "$GROUP"
+fi
+if ! getent passwd "$USER" >/dev/null; then
+  adduser --system --ingroup "$GROUP" --home /var/lib/cache-proxy --no-create-home \
+    --shell /usr/sbin/nologin "$USER"
+fi
+
+chown -R "$USER:$GROUP" /var/lib/cache-proxy
+
+# Self-signed webui TLS cert -- generated once, left alone on upgrades.
+# Browsers will warn on first visit; replace with a real cert from your
+# internal CA by pointing [webui] tls_cert/tls_key in config.toml at it.
+CERT=/etc/cache-proxy/webui-cert.pem
+KEY=/etc/cache-proxy/webui-key.pem
+if [ ! -f "$CERT" ] || [ ! -f "$KEY" ]; then
+  hostname_fqdn="$(hostname -f 2>/dev/null || hostname)"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -keyout "$KEY" -out "$CERT" \
+    -subj "/CN=${hostname_fqdn}" >/dev/null 2>&1
+fi
+chown "$USER:$GROUP" "$CERT" "$KEY"
+chmod 644 "$CERT"
+chmod 640 "$KEY"
+
+# config.toml can carry a password hash -- not plaintext, but still
+# tightened beyond the default 644 a conffile ships with.
+chown root:"$GROUP" /etc/cache-proxy/config.toml
+chmod 640 /etc/cache-proxy/config.toml
+chown root:"$GROUP" /etc/cache-proxy/never-cache-hosts.conf /etc/cache-proxy/never-intercept-hosts.conf
+chmod 644 /etc/cache-proxy/never-cache-hosts.conf /etc/cache-proxy/never-intercept-hosts.conf
+
+systemctl daemon-reload || true
+
+if [ -n "$2" ]; then
+  # Upgrade: restart anything already running so new code takes effect.
+  # Config (a conffile) is preserved by dpkg, not touched here.
+  systemctl try-restart cache-proxy.service cache-webui.service || true
+else
+  # Fresh install: enable for boot, but do not auto-start -- this
+  # intercepts all HTTPS traffic and the web UI has no password set yet.
+  # Review config.toml and set a password before starting it.
+  systemctl enable cache-proxy.service cache-webui.service || true
+  cat <<'EOF'
+
+cache-proxy installed but not started.
+
+Before starting it:
+  1. Set a web UI password:
+       sudo /opt/cache-proxy/venv-webui/bin/python3 -m cache_proxy.webui.hash_password
+     paste the printed line into [webui] in /etc/cache-proxy/config.toml
+     (also set [webui] username).
+  2. Review /etc/cache-proxy/never-cache-hosts.conf and
+     /etc/cache-proxy/never-intercept-hosts.conf.
+  3. Deploy the mitmproxy CA cert to clients (see README.md) --
+     it's generated on first start of cache-proxy.service.
+
+Then:  sudo systemctl start cache-proxy cache-webui
+EOF
+fi
+
+exit 0

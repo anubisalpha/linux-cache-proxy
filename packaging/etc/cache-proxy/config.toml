@@ -1,0 +1,61 @@
+# cache-proxy configuration. Installed to /etc/cache-proxy/config.toml.
+# Restart both services after editing:
+#   sudo systemctl restart cache-proxy cache-webui
+
+[cache]
+dir = "/var/lib/cache-proxy/files"
+db = "/var/lib/cache-proxy/index.db"
+
+# Skip caching anything smaller than this (favicons, redirects, small API
+# responses that happen to carry a cacheable content-type).
+min_size_mb = 1
+
+# Cap on how large a single file this will buffer in memory before writing
+# it to disk. Anything bigger streams straight through uncached rather
+# than risk holding a multi-GB ISO entirely in RAM.
+max_buffer_size_mb = 512
+
+# File extensions treated as cacheable downloads (matched against the URL
+# path, case-insensitive).
+extensions = [
+    ".exe", ".msi", ".msix", ".msixbundle", ".cab", ".appx",
+    ".deb", ".rpm", ".tar.gz", ".tgz", ".tar.xz", ".tar.bz2", ".zip",
+    ".iso", ".img", ".dmg", ".pkg", ".apk",
+]
+
+# Fallback for URLs with no recognizable extension (e.g. "/download?id=123") --
+# matched against the response's Content-Type header.
+content_types = [
+    "application/octet-stream",
+    "application/x-msdownload",
+    "application/vnd.microsoft.portable-executable",
+    "application/x-debian-package",
+    "application/x-rpm",
+    "application/x-redhat-package-manager",
+    "application/zip",
+    "application/gzip",
+    "application/x-xz",
+    "application/x-bzip2",
+    "application/x-iso9660-image",
+    "application/vnd.android.package-archive",
+]
+
+# Host exclusion lists live in their own files, not here:
+#   /etc/cache-proxy/never-cache-hosts.conf
+#   /etc/cache-proxy/never-intercept-hosts.conf
+
+[webui]
+port = 443
+
+# Login is required -- an empty username/password_hash locks the UI out
+# entirely rather than serving it unauthenticated. Set a password with:
+#   sudo /opt/cache-proxy/venv-webui/bin/python3 -m cache_proxy.webui.hash_password
+# then paste the printed password_hash line below.
+username = ""
+password_hash = ""
+
+# Self-signed by default (generated on install) -- browsers will warn on
+# first visit. Point these at a real cert/key from your internal CA if
+# you have one; nothing else needs to change.
+tls_cert = "/etc/cache-proxy/webui-cert.pem"
+tls_key = "/etc/cache-proxy/webui-key.pem"

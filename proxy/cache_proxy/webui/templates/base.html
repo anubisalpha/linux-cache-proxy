@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}Cache Proxy{% endblock %}</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: #f7f7f8; color: #1a1a1a; }
+    h1 { margin-bottom: 0.25rem; }
+    nav { margin-bottom: 1rem; }
+    nav a { margin-right: 1rem; color: #1a1a1a; text-decoration: none; font-weight: 600; }
+    nav a.active { text-decoration: underline; }
+    .stats { color: #555; margin-bottom: 1.5rem; }
+    form.search { margin-bottom: 1rem; }
+    input[type=text] { padding: 0.4rem 0.6rem; width: 320px; }
+    table { border-collapse: collapse; width: 100%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 2rem; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+    th { background: #f0f0f2; }
+    tr:hover { background: #fafafa; }
+    .url { word-break: break-all; color: #555; font-size: 0.8rem; }
+    button { cursor: pointer; }
+    .del-btn { color: #b00020; background: none; border: 1px solid #b00020; border-radius: 4px; padding: 0.2rem 0.5rem; }
+    .hit { color: #1a7f37; font-weight: 600; }
+    .miss { color: #9a6700; font-weight: 600; }
+    .filters { margin-bottom: 1rem; color: #555; font-size: 0.9rem; }
+    .filters a { margin-right: 0.75rem; }
+    h2 { font-size: 1.1rem; margin-top: 2rem; }
+  </style>
+</head>
+<body>
+  <h1>Cache Proxy</h1>
+  <nav>
+    <a href="/" class="{{ 'active' if active == 'files' }}">Cached Files</a>
+    <a href="/usage" class="{{ 'active' if active == 'usage' }}">Usage</a>
+  </nav>
+  {% block content %}{% endblock %}
+</body>
+</html>

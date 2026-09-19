@@ -1,0 +1,3 @@
+/etc/cache-proxy/config.toml
+/etc/cache-proxy/never-cache-hosts.conf
+/etc/cache-proxy/never-intercept-hosts.conf

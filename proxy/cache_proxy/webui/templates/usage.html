@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="stats">
+    {{ summary.requests }} requests &middot;
+    {{ summary.clients }} distinct clients &middot;
+    {{ summary.hits }} cache hits
+    ({{ (100 * summary.hits / summary.requests) | round(1) if summary.requests else 0 }}%) &middot;
+    {{ summary.bytes_served | human_size }} served &middot;
+    {{ summary.bytes_from_cache | human_size }} served from cache
+  </div>
+
+  <div class="filters">
+    Window:
+    <a href="/usage?days=1{{ '&client=' + client if client }}">1 day</a>
+    <a href="/usage?days=7{{ '&client=' + client if client }}">7 days</a>
+    <a href="/usage?days=30{{ '&client=' + client if client }}">30 days</a>
+    <a href="/usage?days=0{{ '&client=' + client if client }}">all time</a>
+    {% if client %}
+      &middot; filtering to client <strong>{{ client }}</strong>
+      <a href="/usage?days={{ days }}">(clear)</a>
+    {% endif %}
+  </div>
+
+  <h2>Top clients</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Client IP</th>
+        <th>Requests</th>
+        <th>Hit rate</th>
+        <th>Bytes served</th>
+        <th>Bytes from cache</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in top_clients %}
+      <tr>
+        <td><a href="/usage?days={{ days }}&client={{ c['client_ip'] }}">{{ c['client_ip'] or 'unknown' }}</a></td>
+        <td>{{ c['requests'] }}</td>
+        <td>{{ (100 * c['hits'] / c['requests']) | round(1) if c['requests'] else 0 }}%</td>
+        <td>{{ c['bytes_served'] | human_size }}</td>
+        <td>{{ c['bytes_from_cache'] | human_size }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No activity in this window.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Most-requested files</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Filename</th>
+        <th>Requests</th>
+        <th>Hits</th>
+        <th>Bytes served</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in top_files %}
+      <tr>
+        <td><a href="/download/{{ f['url_hash'] }}">{{ f['filename'] }}</a></td>
+        <td>{{ f['requests'] }}</td>
+        <td>{{ f['hits'] }}</td>
+        <td>{{ f['bytes_served'] | human_size }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">No activity in this window.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Recent activity</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Client</th>
+        <th>Filename</th>
+        <th>Result</th>
+        <th>Bytes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in recent %}
+      <tr>
+        <td>{{ r['ts'] | datetime }}</td>
+        <td><a href="/usage?days={{ days }}&client={{ r['client_ip'] }}">{{ r['client_ip'] or 'unknown' }}</a></td>
+        <td>{{ r['filename'] }}</td>
+        <td>{% if r['hit'] %}<span class="hit">HIT</span>{% else %}<span class="miss">MISS (stored)</span>{% endif %}</td>
+        <td>{{ r['bytes'] | human_size }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No activity recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

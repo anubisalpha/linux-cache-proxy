@@ -1,0 +1,23 @@
+[Unit]
+Description=Cache proxy (mitmproxy, caches software downloads)
+After=network.target
+
+[Service]
+Type=simple
+User=cacheproxy
+Group=cacheproxy
+WorkingDirectory=/opt/cache-proxy
+Environment=CACHE_PROXY_DIR=/var/lib/cache-proxy/files
+Environment=CACHE_PROXY_DB=/var/lib/cache-proxy/index.db
+Environment=CACHE_PROXY_CONFDIR=/var/lib/cache-proxy/mitmproxy-ca
+Environment=CACHE_PROXY_PORT=8080
+Environment=PATH=/opt/cache-proxy/venv-proxy/bin:/usr/bin:/bin
+# Don't write __pycache__ into /opt/cache-proxy at runtime -- keeps that
+# tree exactly what the package shipped, so dpkg can fully remove it.
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/bin/bash /opt/cache-proxy/run_proxy.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

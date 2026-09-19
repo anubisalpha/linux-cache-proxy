@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="stats">
+    {{ stats.count }} files cached &middot;
+    {{ stats.total_size | human_size }} on disk &middot;
+    {{ stats.total_hits }} cache hits &middot;
+    {{ stats.bytes_saved | human_size }} of downloads served from cache
+  </div>
+
+  <form class="search" method="get">
+    <input type="text" name="q" placeholder="Search filename or URL" value="{{ q }}">
+    <button type="submit">Search</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Filename</th>
+        <th>Size</th>
+        <th>Type</th>
+        <th>Cached</th>
+        <th>Hits</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in entries %}
+      <tr>
+        <td>
+          <a href="/download/{{ e['url_hash'] }}">{{ e['filename'] }}</a>
+          <div class="url">{{ e['url'] }}</div>
+        </td>
+        <td>{{ e['size'] | human_size }}</td>
+        <td>{{ e['content_type'] or '—' }}</td>
+        <td>{{ e['created_at'] | datetime }}</td>
+        <td>{{ e['hit_count'] }}</td>
+        <td>
+          <form method="post" action="/delete/{{ e['url_hash'] }}" onsubmit="return confirm('Delete this cached file?');">
+            <button class="del-btn" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No cached files yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

@@ -1,0 +1,33 @@
+#!/bin/bash
+set -e
+
+if [ "$1" = "remove" ]; then
+  systemctl disable cache-proxy.service cache-webui.service 2>/dev/null || true
+  systemctl daemon-reload || true
+  # Backstop: __pycache__ dirs created at runtime aren't dpkg-tracked, so
+  # they can block dpkg from removing an otherwise-empty package
+  # directory. PYTHONDONTWRITEBYTECODE=1 in the unit files should prevent
+  # these from appearing at all; this just cleans up anything from before
+  # that was set, or any other stray runtime file.
+  find /opt/cache-proxy -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+fi
+
+if [ "$1" = "purge" ]; then
+  systemctl disable cache-proxy.service cache-webui.service 2>/dev/null || true
+  systemctl daemon-reload || true
+  # Conffiles (config.toml, host lists) are removed by dpkg itself on
+  # purge. Everything else -- cached files, the SQLite index, the
+  # mitmproxy CA and webui TLS cert -- is real state, so it's removed
+  # here explicitly rather than left behind as orphaned data.
+  rm -rf /var/lib/cache-proxy
+  rm -f /etc/cache-proxy/webui-cert.pem /etc/cache-proxy/webui-key.pem
+  rmdir /etc/cache-proxy 2>/dev/null || true
+  if getent passwd cacheproxy >/dev/null; then
+    deluser --system cacheproxy 2>/dev/null || true
+  fi
+  if getent group cacheproxy >/dev/null; then
+    delgroup --system cacheproxy 2>/dev/null || true
+  fi
+fi
+
+exit 0

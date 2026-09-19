@@ -1,0 +1,57 @@
+services:
+  cache-proxy:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command:
+      - /opt/cache-proxy/venv-proxy/bin/mitmdump
+      - --listen-port
+      - "8080"
+      - --set
+      - confdir=/var/lib/cache-proxy/mitmproxy-ca
+      - -s
+      - cache_proxy/addon.py
+    ports:
+      - "8080:8080"
+    volumes:
+      - cache-data:/var/lib/cache-proxy
+
+  cache-webui:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["/bin/bash", "run_webui.sh"]
+    # Dev-only demo login -- production uses whatever's set in
+    # /etc/cache-proxy/config.toml on the real install, never this.
+    environment:
+      CACHE_PROXY_WEBUI_USERNAME: admin
+      # Password is "cache-proxy-dev" -- dev-only, never used in production.
+      CACHE_PROXY_WEBUI_PASSWORD_HASH: pbkdf2_sha256$$600000$$b142e0fda1afcdb045de638ab1eb798a$$a94fe8609a47c2ae433d98b79345801d7f8dc416e5622ff37a62fd47bfc0df41
+    ports:
+      - "8443:443"
+    volumes:
+      - cache-data:/var/lib/cache-proxy
+    healthcheck:
+      test: ["CMD", "curl", "-fk", "-u", "admin:cache-proxy-dev", "https://127.0.0.1:443/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # `docker compose run --rm test` runs the full pytest suite (both venvs)
+  # against an ephemeral cache dir, not the persistent cache-data volume.
+  test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    profiles: ["test"]
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >
+        /opt/cache-proxy/venv-proxy/bin/pytest tests/test_store.py tests/test_config.py tests/test_addon_unit.py tests/test_addon_integration.py -v &&
+        /opt/cache-proxy/venv-webui/bin/pytest tests/test_store.py tests/test_config.py tests/test_auth.py tests/test_webui.py -v
+    environment:
+      CACHE_PROXY_DIR: /tmp/test-cache/files
+      CACHE_PROXY_DB: /tmp/test-cache/index.db
+
+volumes:
+  cache-data:

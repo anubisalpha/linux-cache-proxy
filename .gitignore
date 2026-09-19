@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+venv-proxy/
+venv-webui/
+
+# Build output
+*.deb
+
+# Local/secret config -- never commit real deployment secrets
+*.pem
+*.key

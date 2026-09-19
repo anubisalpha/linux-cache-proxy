@@ -1,0 +1,4 @@
+# This is Linux server tooling -- shell scripts and configs must always
+# have LF line endings regardless of what platform commits them (CRLF in
+# a shebang line breaks it outright).
+* text=auto eol=lf
