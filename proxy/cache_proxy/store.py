@@ -18,6 +18,11 @@ from typing import Optional
 
 from . import config
 
+try:
+    import fcntl
+except ImportError:  # not Linux; request coalescing is simply unavailable
+    fcntl = None
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
     url_hash TEXT PRIMARY KEY,
@@ -381,3 +386,65 @@ def hourly_client_stats(since_ts: Optional[float] = None, client_ip: Optional[st
     query += " GROUP BY client_ip, hour ORDER BY client_ip, hour"
     with _connect() as conn:
         return [dict(r) for r in conn.execute(query, params).fetchall()]
+
+
+# --- per-URL fetch locks (request coalescing across worker processes) ------
+
+def _lock_dir() -> Path:
+    return config.CACHE_DIR / ".locks"
+
+
+def locks_available() -> bool:
+    return fcntl is not None
+
+
+def try_lock(url_hash_: str) -> Optional[int]:
+    """Take the fetch lock for a URL without blocking. Returns a file
+    descriptor to hand to release_lock(), or None if another request (in any
+    worker process) already holds it. flock is released by the kernel if the
+    holder dies, so a crashed worker can't wedge a URL."""
+    if fcntl is None:
+        return None
+    d = _lock_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    fd = os.open(d / url_hash_, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def release_lock(fd: int) -> None:
+    try:
+        os.close(fd)  # closing drops the flock
+    except OSError:
+        pass
+
+
+def cleanup_locks(max_age: float = 3600) -> int:
+    """Delete lock files nobody holds and that haven't been touched lately, so
+    the directory doesn't grow forever. Worst case of racing a new request is
+    one duplicate fetch."""
+    d = _lock_dir()
+    if fcntl is None or not d.exists():
+        return 0
+    removed = 0
+    cutoff = time.time() - max_age
+    for f in d.iterdir():
+        try:
+            if f.stat().st_mtime > cutoff:
+                continue
+            fd = os.open(f, os.O_RDWR)
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            f.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+    return removed

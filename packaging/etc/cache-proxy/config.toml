@@ -18,6 +18,12 @@ max_buffer_size_mb = 512
 # How long a cached download is served before it is fetched again.
 download_ttl_days = 30
 
+# When several clients request the same not-yet-cached file at once, the
+# first fetches it and the others wait (up to this many seconds) and are
+# then served from the cache, instead of each downloading it separately.
+# 0 turns this off.
+coalesce_wait_seconds = 60
+
 # Cap on the total size of the cache in GB (downloads and web assets
 # together); 0 = unlimited. Once exceeded, the least recently used entries
 # are evicted first.

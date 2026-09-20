@@ -31,6 +31,10 @@ _DEFAULTS = {
         "max_buffer_size_mb": 512,
         # How long a cached download is served before it's refetched.
         "download_ttl_days": 30,
+        # When several clients ask for the same not-yet-cached file at once,
+        # the first fetches it and the rest wait up to this long, then are
+        # served from the cache. 0 disables (every request goes upstream).
+        "coalesce_wait_seconds": 60,
         # Total cache size cap in GB; 0 = unlimited. Least-recently-hit
         # entries are evicted first once the cap is exceeded.
         "max_size_gb": 0,
@@ -135,7 +139,9 @@ MAX_BUFFER_SIZE = int(os.environ.get("CACHE_PROXY_MAX_BUFFER_SIZE", _cfg["cache"
 DOWNLOAD_TTL = int(float(os.environ.get("CACHE_PROXY_DOWNLOAD_TTL_DAYS", _cfg["cache"]["download_ttl_days"])) * 86400)
 MAX_CACHE_BYTES = int(float(os.environ.get("CACHE_PROXY_MAX_SIZE_GB", _cfg["cache"]["max_size_gb"])) * 1024 ** 3)
 
-WEBCACHE_ENABLED = bool(_cfg["webcache"]["enabled"])
+COALESCE_WAIT = float(os.environ.get("CACHE_PROXY_COALESCE_WAIT", _cfg["cache"]["coalesce_wait_seconds"]))
+
+WEBCACHE_ENABLED =bool(_cfg["webcache"]["enabled"])
 WEBCACHE_TTL = int(float(os.environ.get("CACHE_PROXY_WEBCACHE_TTL_MINUTES", _cfg["webcache"]["ttl_minutes"])) * 60)
 WEBCACHE_MAX_SIZE = int(_cfg["webcache"]["max_size_mb"] * 1024 * 1024)
 WEBCACHE_EXTENSIONS = set(_cfg["webcache"]["extensions"])

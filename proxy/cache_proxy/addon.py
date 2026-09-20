@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import sys
+import time
 from typing import Optional
 
 from mitmproxy import http
@@ -160,6 +161,8 @@ class CacheAddon:
     def __init__(self):
         self._known_hashes: set = set()
         self._counters: dict = {}
+        # flow.id -> (lock fd, taken at): fetches this worker is leading.
+        self._leading: dict = {}
         self._token = secrets.token_hex(16)
         self._server = LocalFileServer(self._token)
 
@@ -186,11 +189,83 @@ class CacheAddon:
                 if self._counters:
                     deltas, self._counters = self._counters, {}
                     await loop.run_in_executor(None, store.add_counters, deltas)
+                # Safety net: never let a leader that somehow missed every
+                # release hook keep a URL locked past the waiters' patience.
+                stale = time.monotonic() - max(2 * config.COALESCE_WAIT, 300)
+                for fid in [f for f, (_fd, t) in self._leading.items() if t < stale]:
+                    self._release(fid)
             except Exception as e:
                 logger.warning("cache refresh failed: %s", e)
 
     def _count(self, name: str, n: int = 1) -> None:
         self._counters[name] = self._counters.get(name, 0) + n
+
+    # ---- request coalescing ------------------------------------------------
+    #
+    # When many clients ask for the same not-yet-cached file at once, only the
+    # first should go upstream. It takes a per-URL file lock (shared by every
+    # worker process); the others wait for it to be released and are then
+    # served from the cache. The leader releases as soon as the outcome is
+    # known: stored, or clearly *not* going to be (streamed, uncacheable,
+    # error). Waiters therefore never queue behind a multi-GB download, and an
+    # uncacheable response doesn't serialise them.
+
+    @staticmethod
+    def _coalescible(flow: http.HTTPFlow) -> bool:
+        if config.COALESCE_WAIT <= 0 or not store.locks_available():
+            return False
+        req = flow.request
+        if req.method != "GET" or req.headers.get("Range") or req.headers.get("Authorization"):
+            return False
+        if config.host_matches(req.host, config.NEVER_CACHE_HOSTS) or config.host_matches(
+            req.host, config.NEVER_INTERCEPT_HOSTS
+        ):
+            return False
+        path = req.pretty_url.split("?")[0].lower()
+        if any(path.endswith(e) for e in config.CACHEABLE_EXTENSIONS):
+            return True
+        return config.WEBCACHE_ENABLED and any(path.endswith(e) for e in config.WEBCACHE_EXTENSIONS)
+
+    @staticmethod
+    def _fresh_entry(h: str) -> bool:
+        entry = store.get_entry(h)
+        return entry is not None and not store.is_expired(entry)
+
+    def _release(self, flow_id: str) -> None:
+        held = self._leading.pop(flow_id, None)
+        if held:
+            store.release_lock(held[0])
+
+    async def requestheaders(self, flow: http.HTTPFlow) -> None:
+        if not self._coalescible(flow):
+            return
+        h = store.url_hash(flow.request.pretty_url)
+        if h in self._known_hashes:
+            return
+        fd = store.try_lock(h)
+        if fd is not None:
+            # Leader. Another worker may have stored it since our last index
+            # refresh; if so there's nothing to fetch.
+            if self._fresh_entry(h):
+                store.release_lock(fd)
+                self._known_hashes.add(h)
+            else:
+                self._leading[flow.id] = (fd, time.monotonic())
+            return
+        # Someone else is fetching this URL: wait for them, then use their copy.
+        deadline = time.monotonic() + config.COALESCE_WAIT
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
+            fd = store.try_lock(h)
+            if fd is not None:  # released; we only wanted to know that
+                store.release_lock(fd)
+                break
+        if self._fresh_entry(h):
+            self._known_hashes.add(h)
+            self._count("coalesced_requests")
+
+    def error(self, flow: http.HTTPFlow) -> None:
+        self._release(flow.id)
 
     def request(self, flow: http.HTTPFlow) -> None:
         if flow.request.method != "GET":
@@ -220,6 +295,7 @@ class CacheAddon:
             served = self._serve_in_memory(flow, entry, path)
         if not served:
             return
+        self._release(flow.id)
 
         if is_asset:
             self._count("asset_hits")
@@ -270,20 +346,30 @@ class CacheAddon:
         we might actually store; stream everything else straight through.
         """
         if flow.response is None or flow.request.method != "GET":
+            self._release(flow.id)
             return
         if flow.response.headers.get("X-Cache-Proxy") == "HIT":
             flow.response.stream = True  # from the loopback file server
+            self._release(flow.id)
             return
         cls = _classify(flow, flow.response)
         if flow.response.status_code != 200 or cls is None:
             flow.response.stream = True
+            self._release(flow.id)  # won't be stored: let waiters go upstream
             return
         content_length = flow.response.headers.get("Content-Length")
         limit = config.WEBCACHE_MAX_SIZE if cls[0] == "asset" else config.MAX_BUFFER_SIZE
         if content_length and content_length.isdigit() and int(content_length) > limit:
             flow.response.stream = True
+            self._release(flow.id)  # too big to store, don't hold anyone up
 
     def response(self, flow: http.HTTPFlow) -> None:
+        try:
+            self._store_response(flow)
+        finally:
+            self._release(flow.id)
+
+    def _store_response(self, flow: http.HTTPFlow) -> None:
         if flow.response is None or flow.request.method != "GET":
             return
         if flow.response.headers.get("X-Cache-Proxy") == "HIT":

@@ -37,6 +37,9 @@
       {{ counters.get('asset_misses', 0) }} stored,
       {{ counters.get('asset_bytes_saved', 0) | human_size }} saved
     {% endif %}
+    {% if counters.get('coalesced_requests') %}
+      &middot; {{ counters.get('coalesced_requests') }} duplicate fetches avoided
+    {% endif %}
   </div>
   {% if disk_low %}
   <div class="warn">Low disk space on the cache volume: {{ disk.free | human_size }} free of {{ disk.total | human_size }}.</div>

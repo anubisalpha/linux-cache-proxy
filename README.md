@@ -54,9 +54,7 @@ now per project decision — revisit if it becomes a priority.
   worker drops its connections). Crashed workers are replaced. Workers share
   one cache directory and SQLite index (WAL); files are written atomically
   and each worker re-reads the index every few seconds, so a file stored by
-  one worker is a hit on all of them. (A worker that hasn't refreshed yet
-  may fetch that file from the origin once itself: at most one duplicate
-  fetch per worker per file.)
+  one worker is a hit on all of them (see request coalescing, next).
 - **Cache lifetimes** (`config.toml`): downloads are served from cache for
   `download_ttl_days` (30); static web assets (JS, CSS, images, fonts —
   never HTML) for `[webcache] ttl_minutes` (60). Origin headers are always
@@ -66,6 +64,17 @@ now per project decision — revisit if it becomes a priority.
   entry is refetched and its lifetime restarts; expired files are purged
   hourly. Asset traffic is counted (hits/stored/bytes saved) but not written
   to `access_log`, so it doesn't drown out the usage statistics.
+- **Request coalescing**: when several clients ask for the same
+  not-yet-cached download or static asset at once (a "stampede" on a fresh
+  installer), only the first goes upstream. It takes a per-URL file lock
+  shared by every worker process; the rest wait, then are served from the
+  cache. The lock is released as soon as the outcome is known — stored, or
+  clearly not going to be (too big, uncacheable, an error) — so waiters
+  never queue behind a multi-GB download and an uncacheable response doesn't
+  serialise them. Waiting is capped by `[cache] coalesce_wait_seconds` (60;
+  `0` turns it off), after which a request just goes upstream. Only URLs
+  that look like a download or static asset take part, so ordinary page
+  traffic is never held up. The kernel drops the lock if a worker dies.
 - **Cache hits are streamed and resumable.** Hits over 8 MiB, and any
   request carrying `Range`, are served from disk by a small loopback file
   server inside each worker (mitmproxy can't stream a body from a request

@@ -63,12 +63,18 @@ def origin(tmp_path):
             hits["n"] += 1
             p = self.path.split("?")[0]
             headers = {}
+            if p.startswith("/slow"):
+                time.sleep(1.0)  # long enough for concurrent requests to pile up
             if p == "/app.js":
                 body, ctype, headers = b"console.log(1);" * 10, "application/javascript", {"Cache-Control": "public, max-age=600"}
             elif p == "/private.js":
                 body, ctype, headers = b"secret();", "application/javascript", {"Cache-Control": "no-store"}
             elif p == "/page.html":
                 body, ctype = b"<html>hi</html>", "text/html"
+            elif p == "/slow-private.js":
+                body, ctype, headers = b"secret();", "application/javascript", {"Cache-Control": "no-store"}
+            elif p == "/slow.exe":
+                body, ctype = (tmp_path / "www" / "small.exe").read_bytes(), "application/octet-stream"
             elif p in ("/small.exe", "/big.iso"):
                 body, ctype = (tmp_path / "www" / p[1:]).read_bytes(), "application/octet-stream"
             else:
@@ -285,3 +291,72 @@ def test_pool_replaces_a_crashed_worker(origin, pool):
 
     assert _wait_until(replaced, seconds=30)
     assert _get(proxy, origin["base"] + "/app.js").status == 200  # still serving
+
+
+# ---- request coalescing ---------------------------------------------------
+
+def _burst(proxy, url, n):
+    """n simultaneous clients, each on its own connection. Returns
+    ([(status, X-Cache-Proxy, body)...], seconds taken)."""
+    results, errors = [], []
+    start = threading.Barrier(n)
+
+    def one():
+        try:
+            start.wait()
+            r = _get(proxy, url)
+            results.append((r.status, r.headers.get("X-Cache-Proxy"), r.read()))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=one) for _ in range(n)]
+    t0 = time.time()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    assert not errors, errors
+    return results, time.time() - t0
+
+
+def test_concurrent_misses_share_one_upstream_fetch(origin, single_proxy):
+    proxy, _ = single_proxy
+    results, _took = _burst(proxy, origin["base"] + "/slow.exe", 15)
+    assert origin["hits"]["n"] == 1
+    assert len(results) == 15 and all(r[0] == 200 and r[2] == origin["small"] for r in results)
+    assert sorted(r[1] for r in results).count("MISS-STORED") == 1
+    assert [r[1] for r in results].count("HIT") == 14
+
+
+def test_concurrent_misses_share_one_fetch_across_workers(origin, pool):
+    proxy, _tmp, _proc = pool
+    results, _took = _burst(proxy, origin["base"] + "/slow.exe", 20)
+    assert origin["hits"]["n"] == 1  # two worker processes, still one fetch
+    assert len(results) == 20 and all(r[2] == origin["small"] for r in results)
+
+
+def test_uncacheable_responses_are_not_serialised(origin, single_proxy):
+    proxy, _ = single_proxy
+    results, took = _burst(proxy, origin["base"] + "/slow-private.js", 8)
+    assert all(r[0] == 200 and r[2] == b"secret();" for r in results)
+    assert origin["hits"]["n"] == 8  # nothing to share, so each goes upstream
+    # Queued one after another this would take 8+ seconds.
+    assert took < 5, took
+
+
+def test_coalescing_can_be_turned_off(origin, tmp_path):
+    mitmdump = Path(sys.executable).parent / "mitmdump"
+    if not mitmdump.exists() and not shutil.which("mitmdump"):
+        pytest.skip("mitmdump not installed")
+    port = _free_port()
+    proc = subprocess.Popen(
+        [str(mitmdump), "--listen-port", str(port), "--set", f"confdir={tmp_path / 'ca'}", "-s", "cache_proxy/addon.py"],
+        cwd=PROXY_ROOT, env=_env(tmp_path, CACHE_PROXY_COALESCE_WAIT=0), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    try:
+        _wait_port(port, proc)
+        _burst(f"http://127.0.0.1:{port}", origin["base"] + "/slow.exe", 6)
+        assert origin["hits"]["n"] == 6
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)

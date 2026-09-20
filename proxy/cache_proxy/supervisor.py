@@ -245,6 +245,7 @@ class Supervisor:
             try:
                 purged = store.purge_expired()
                 evicted = store.evict_to_quota()
+                store.cleanup_locks()
                 if purged or evicted:
                     print(f"supervisor: purged {purged} expired, evicted {evicted} over quota", flush=True)
             except Exception as e:  # housekeeping must never take the pool down
