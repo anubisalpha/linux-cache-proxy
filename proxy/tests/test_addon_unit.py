@@ -21,6 +21,7 @@ def _fake_flow(url: str, method: str = "GET") -> MagicMock:
     flow.request.method = method
     flow.request.pretty_url = url
     flow.request.host = url.split("://", 1)[1].split("/", 1)[0].split(":")[0]
+    flow.request.headers = {}
     flow.client_conn.peername = ("10.0.0.5", 12345)
     return flow
 

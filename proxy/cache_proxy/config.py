@@ -29,6 +29,11 @@ _DEFAULTS = {
         "db": "/var/lib/cache-proxy/index.db",
         "min_size_mb": 1,
         "max_buffer_size_mb": 512,
+        # How long a cached download is served before it's refetched.
+        "download_ttl_days": 30,
+        # Total cache size cap in GB; 0 = unlimited. Least-recently-hit
+        # entries are evicted first once the cap is exceeded.
+        "max_size_gb": 0,
         # File extensions worth caching (software installers, packages).
         "extensions": [
             ".exe", ".msi", ".msix", ".msixbundle", ".cab", ".appx",
@@ -50,6 +55,37 @@ _DEFAULTS = {
             "application/x-iso9660-image",
             "application/vnd.android.package-archive",
         ],
+    },
+    # Short-lived cache for static web assets (never HTML).
+    "webcache": {
+        "enabled": True,
+        "ttl_minutes": 60,
+        "max_size_mb": 5,
+        "extensions": [
+            ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+            ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf",
+        ],
+        "content_types": [
+            "text/css", "application/javascript", "text/javascript",
+            "image/png", "image/jpeg", "image/gif", "image/webp",
+            "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon",
+            "font/woff", "font/woff2", "font/ttf", "font/otf",
+        ],
+    },
+    "proxy": {
+        "min_workers": 2,
+        "max_workers": 0,  # 0 = number of CPUs
+        "scale_up_cpu_pct": 70,
+        "scale_down_cpu_pct": 20,
+        "scale_down_idle_seconds": 300,
+        "sample_interval_seconds": 5,
+        "status_file": "/var/lib/cache-proxy/workers.json",
+    },
+    "analytics": {
+        "anomaly_factor": 3.0,
+        "min_history_hours": 6,
+        "lookback_hours": 168,
+        "retention_days": 90,
     },
     "webui": {
         "port": 443,
@@ -95,6 +131,29 @@ MIN_CACHE_SIZE = int(os.environ.get("CACHE_PROXY_MIN_SIZE", _cfg["cache"]["min_s
 # caps how large a single candidate we'll buffer, so a multi-GB ISO with a
 # cacheable extension doesn't get held entirely in RAM.
 MAX_BUFFER_SIZE = int(os.environ.get("CACHE_PROXY_MAX_BUFFER_SIZE", _cfg["cache"]["max_buffer_size_mb"] * 1024 * 1024))
+
+DOWNLOAD_TTL = int(float(os.environ.get("CACHE_PROXY_DOWNLOAD_TTL_DAYS", _cfg["cache"]["download_ttl_days"])) * 86400)
+MAX_CACHE_BYTES = int(float(os.environ.get("CACHE_PROXY_MAX_SIZE_GB", _cfg["cache"]["max_size_gb"])) * 1024 ** 3)
+
+WEBCACHE_ENABLED = bool(_cfg["webcache"]["enabled"])
+WEBCACHE_TTL = int(float(os.environ.get("CACHE_PROXY_WEBCACHE_TTL_MINUTES", _cfg["webcache"]["ttl_minutes"])) * 60)
+WEBCACHE_MAX_SIZE = int(_cfg["webcache"]["max_size_mb"] * 1024 * 1024)
+WEBCACHE_EXTENSIONS = set(_cfg["webcache"]["extensions"])
+WEBCACHE_CONTENT_TYPES = set(_cfg["webcache"]["content_types"])
+
+MIN_WORKERS = max(1, int(os.environ.get("CACHE_PROXY_MIN_WORKERS", _cfg["proxy"]["min_workers"])))
+MAX_WORKERS = int(os.environ.get("CACHE_PROXY_MAX_WORKERS", _cfg["proxy"]["max_workers"])) or (os.cpu_count() or 1)
+MAX_WORKERS = max(MIN_WORKERS, MAX_WORKERS)
+SCALE_UP_CPU_PCT = float(_cfg["proxy"]["scale_up_cpu_pct"])
+SCALE_DOWN_CPU_PCT = float(_cfg["proxy"]["scale_down_cpu_pct"])
+SCALE_DOWN_IDLE_SECONDS = float(os.environ.get("CACHE_PROXY_SCALE_DOWN_IDLE_SECONDS", _cfg["proxy"]["scale_down_idle_seconds"]))
+SAMPLE_INTERVAL = float(os.environ.get("CACHE_PROXY_SAMPLE_INTERVAL", _cfg["proxy"]["sample_interval_seconds"]))
+WORKER_STATUS_FILE = Path(os.environ.get("CACHE_PROXY_STATUS_FILE", _cfg["proxy"]["status_file"]))
+
+ANOMALY_FACTOR = float(_cfg["analytics"]["anomaly_factor"])
+MIN_HISTORY_HOURS = int(_cfg["analytics"]["min_history_hours"])
+LOOKBACK_HOURS = int(_cfg["analytics"]["lookback_hours"])
+RETENTION_DAYS = int(_cfg["analytics"]["retention_days"])
 
 CACHEABLE_EXTENSIONS = set(_cfg["cache"]["extensions"])
 CACHEABLE_CONTENT_TYPES = set(_cfg["cache"]["content_types"])

@@ -38,6 +38,50 @@ now per project decision — revisit if it becomes a priority.
   - `/usage` — request/hit-rate summary, top clients by bytes served,
     most-requested files, recent activity log (filterable by client IP,
     windowed by 1/7/30 days or all-time)
+  - `/stats` — per-client hourly usage with anomaly flags (below); raw
+    series at `/api/hourly-stats` (JSON, for Grafana's JSON API datasource)
+  - `/` also shows the worker pool (active/max workers, pool and
+    per-worker CPU, connections), refreshed live from `/api/workers`
+- **Worker pool** (`cache_proxy/supervisor.py`): one mitmproxy process
+  uses about one CPU core, so the proxy runs a pool of them sharing port
+  8080 (`SO_REUSEPORT` — the kernel spreads connections across workers and
+  each connection keeps its real client IP, so usage logging is
+  unaffected). It starts `min_workers`, adds one when the pool's average
+  CPU stays above `scale_up_cpu_pct`, and retires an idle one back down
+  toward the minimum once the pool has been quiet for
+  `scale_down_idle_seconds`. A worker is only retired when it has no open
+  client connections (a long download uses almost no CPU, and stopping a
+  worker drops its connections). Crashed workers are replaced. Workers share
+  one cache directory and SQLite index (WAL); files are written atomically
+  and each worker re-reads the index every few seconds, so a file stored by
+  one worker is a hit on all of them. (A worker that hasn't refreshed yet
+  may fetch that file from the origin once itself: at most one duplicate
+  fetch per worker per file.)
+- **Cache lifetimes** (`config.toml`): downloads are served from cache for
+  `download_ttl_days` (30); static web assets (JS, CSS, images, fonts —
+  never HTML) for `[webcache] ttl_minutes` (60). Origin headers are always
+  respected for assets: nothing is stored that is `no-store`/`private`/
+  `no-cache`, sets a cookie, needs `Authorization`, or varies on anything
+  but `Accept-Encoding`, and a shorter origin `max-age` wins. An expired
+  entry is refetched and its lifetime restarts; expired files are purged
+  hourly. Asset traffic is counted (hits/stored/bytes saved) but not written
+  to `access_log`, so it doesn't drown out the usage statistics.
+- **Cache hits are streamed and resumable.** Hits over 8 MiB, and any
+  request carrying `Range`, are served from disk by a small loopback file
+  server inside each worker (mitmproxy can't stream a body from a request
+  hook), so a multi-GB ISO isn't loaded into RAM and resumed downloads get
+  `206 Partial Content`.
+- **Quota**: `max_size_gb` (0 = unlimited) evicts least-recently-hit
+  entries once the cache exceeds it. The main page warns when the cache
+  volume is under 10% free. `access_log` rows older than `retention_days`
+  (90) are pruned daily.
+- **Usage alerting** (`cache_proxy/analytics.py`): `/stats` flags a client
+  when its current hour exceeds `anomaly_factor` (3x) its own trailing
+  average on requests, bytes or new downloads, once it has
+  `min_history_hours` of history so a new client never trips on hour one.
+  "Usage" here means what `access_log` records — cache hits and newly
+  stored downloads — not all browsing. Flagging is on-screen/JSON only;
+  nothing is pushed anywhere yet.
 
 ### Installing the package
 
@@ -46,8 +90,8 @@ Python venvs bundled in (no internet access or pip resolution needed on
 the target machine):
 
 ```bash
-bash packaging/build-deb.sh 1.0.0          # run on Ubuntu 24.04 (or via docker/Dockerfile)
-sudo apt install ./cache-proxy_1.0.0_amd64.deb
+bash packaging/build-deb.sh 1.1.0          # run on Ubuntu 24.04 (or via docker/Dockerfile)
+sudo apt install ./cache-proxy_1.1.0_amd64.deb
 ```
 
 `postinst` creates the `cacheproxy` system user, `/var/lib/cache-proxy/`,
@@ -97,7 +141,7 @@ Preferences → Control Panel Settings → Internet Settings) or WPAD:
 
 | File | Contents |
 |---|---|
-| `config.toml` | Cache dir/db paths, size limits, cacheable extensions/content-types, web UI port/username/password_hash/TLS cert paths |
+| `config.toml` | Cache dir/db paths, size limits, TTLs and quota, cacheable extensions/content-types, `[webcache]` asset rules, `[proxy]` worker-pool sizing, `[analytics]` thresholds/retention, web UI port/username/password_hash/TLS cert paths |
 | `never-cache-hosts.conf` | Hosts (+ subdomains) proxied normally but never written to the cache |
 | `never-intercept-hosts.conf` | Hosts (+ subdomains) that bypass TLS interception entirely — mitmproxy tunnels them raw. Use for cert-pinned apps and anything sensitive (banking, etc). Implies never-cache for the same host |
 
@@ -115,20 +159,41 @@ wired up for some reason.
 
 ### Known limits
 
-- No automatic quota/eviction — delete stale entries via the web UI.
-- **Not tuned for full-office "everything goes through this" duty.**
-  mitmproxy is single-process (asyncio, not multi-worker like Squid/Nginx)
-  and SSL-bump adds a double TLS handshake to every HTTPS connection —
-  fine for the download-caching job this was built for, but a real
-  throughput ceiling if you route *all* general browsing through it too.
-  Load-test with realistic concurrent user counts before relying on it as
-  the office's default gateway proxy.
+- Alerts are visible on `/stats` and via the JSON API only; there is no
+  email/Slack push.
+- Scaling down never interrupts a client, so under steady light traffic
+  where every worker always holds a connection it can take a while to
+  shrink back to the minimum.
+- **Throughput is bounded by workers x one core.** SSL-bump adds a double
+  TLS handshake to every HTTPS connection, so routing *all* general
+  browsing through this is heavier than the download-caching job it was
+  built for. The worker pool removes the single-process ceiling. Measured
+  on a Docker VM with 8 CPUs (proxy workers pinned to 4 cores, load
+  generator and origin on the other 4), with 100 concurrent clients each
+  looping CONNECT + TLS handshake + a 2 KB GET, no think time, 10 s client
+  timeout, 20 s runs:
+
+  | Workers | Throughput | Timeouts |
+  |---|---|---|
+  | 1 | 11.1 req/s | 55% |
+  | 2 | 17.4 req/s | 38% |
+  | 4 | 30.5 req/s | 19% |
+
+  Caveats: this is a synthetic worst case (real users pause and reuse
+  connections), the workers were at ~60-80% CPU rather than saturated at 4
+  workers so the generator was part of the limit, and the absolute figures
+  are not comparable to the earlier single-worker measurement (a different,
+  lighter generator). Serving a cacheable asset from cache with one worker
+  reached 17.3 req/s at 99% CPU versus 11.1 req/s for the same load passing
+  through, so asset caching didn't cost throughput here. Load-test with your
+  own realistic concurrency before relying on it as the office's default
+  gateway proxy.
 - **Certificate pinning breaks under SSL-bump**, regardless of the CA
   being trusted (banking apps, some SaaS clients). Exempt those hosts by
   adding them to `never-intercept-hosts.conf` (see Configuration above).
-- No built-in horizontal scaling. If one box isn't enough, you're running
-  multiple instances by hand, and the SQLite-backed index doesn't cleanly
-  support that without extra work.
+- The worker pool scales across the cores of one machine. Spreading
+  across several machines is still manual, and the SQLite index and cache
+  directory are per-machine.
 - Buffering is now scoped correctly (`responseheaders` hook, see
   `addon.py`): only responses that look like a real cacheable download get
   buffered in memory; everything else (web pages, images, video, SaaS

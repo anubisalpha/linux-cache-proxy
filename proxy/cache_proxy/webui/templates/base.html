@@ -24,6 +24,11 @@
     .filters { margin-bottom: 1rem; color: #555; font-size: 0.9rem; }
     .filters a { margin-right: 0.75rem; }
     h2 { font-size: 1.1rem; margin-top: 2rem; }
+    .panel { background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 0.75rem 1rem; margin-bottom: 1rem; }
+    .panel table { box-shadow: none; margin: 0.5rem 0 0; }
+    .bar { display: inline-block; width: 90px; height: 8px; background: #e4e4e7; border-radius: 4px; vertical-align: middle; overflow: hidden; }
+    .bar > span { display: block; height: 100%; background: #2f6fdb; }
+    .warn { background: #fff4e5; border: 1px solid #f0b56a; padding: 0.5rem 0.75rem; margin-bottom: 1rem; }
   </style>
 </head>
 <body>
@@ -31,6 +36,7 @@
   <nav>
     <a href="/" class="{{ 'active' if active == 'files' }}">Cached Files</a>
     <a href="/usage" class="{{ 'active' if active == 'usage' }}">Usage</a>
+    <a href="/stats" class="{{ 'active' if active == 'stats' }}">Stats</a>
   </nav>
   {% block content %}{% endblock %}
 </body>

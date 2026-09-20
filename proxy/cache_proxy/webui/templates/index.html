@@ -1,24 +1,69 @@
 {% extends "base.html" %}
 {% block content %}
+  <div class="panel" id="workers-panel">
+    <strong>Proxy workers</strong>
+    <span id="workers-summary">
+    {% if workers.available %}
+      {{ workers.workers | selectattr('state', 'equalto', 'active') | list | length }} active of max {{ workers.max_workers }}
+      (min {{ workers.min_workers }}) &middot; pool load {{ workers.avg_cpu | round(0) | int }}%
+    {% else %}
+      Proxy not running / status unavailable
+    {% endif %}
+    </span>
+    <table id="workers-table" {% if not workers.available %}style="display:none"{% endif %}>
+      <thead><tr><th>PID</th><th>State</th><th>CPU</th><th>Connections</th><th>Uptime</th></tr></thead>
+      <tbody>
+        {% for w in workers.workers %}
+        <tr>
+          <td>{{ w.pid }}</td>
+          <td>{{ w.state }}</td>
+          <td><span class="bar"><span style="width: {{ [w.cpu, 100] | min }}%"></span></span> {{ w.cpu | round(0) | int }}%</td>
+          <td>{{ w.connections }}</td>
+          <td>{{ (w.uptime // 60) }}m</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
   <div class="stats">
     {{ stats.count }} files cached &middot;
-    {{ stats.total_size | human_size }} on disk &middot;
+    {{ stats.total_size | human_size }} on disk
+    {% if max_cache_bytes %}(quota {{ max_cache_bytes | human_size }}){% endif %} &middot;
     {{ stats.total_hits }} cache hits &middot;
     {{ stats.bytes_saved | human_size }} of downloads served from cache
+    {% if counters.get('asset_hits') or counters.get('asset_misses') %}
+      &middot; web assets: {{ counters.get('asset_hits', 0) }} hits /
+      {{ counters.get('asset_misses', 0) }} stored,
+      {{ counters.get('asset_bytes_saved', 0) | human_size }} saved
+    {% endif %}
   </div>
+  {% if disk_low %}
+  <div class="warn">Low disk space on the cache volume: {{ disk.free | human_size }} free of {{ disk.total | human_size }}.</div>
+  {% endif %}
 
   <form class="search" method="get">
     <input type="text" name="q" placeholder="Search filename or URL" value="{{ q }}">
+    <select name="kind">
+      <option value="" {{ 'selected' if not kind }}>All</option>
+      <option value="download" {{ 'selected' if kind == 'download' }}>Downloads</option>
+      <option value="asset" {{ 'selected' if kind == 'asset' }}>Web assets</option>
+    </select>
     <button type="submit">Search</button>
+  </form>
+  <form method="post" action="/purge-expired" style="margin-bottom:1rem">
+    <button type="submit">Purge expired now</button>
   </form>
 
   <table>
     <thead>
       <tr>
         <th>Filename</th>
+        <th>Kind</th>
         <th>Size</th>
         <th>Type</th>
         <th>Cached</th>
+        <th>Expires in</th>
         <th>Hits</th>
         <th></th>
       </tr>
@@ -30,9 +75,11 @@
           <a href="/download/{{ e['url_hash'] }}">{{ e['filename'] }}</a>
           <div class="url">{{ e['url'] }}</div>
         </td>
+        <td>{{ e['kind'] }}</td>
         <td>{{ e['size'] | human_size }}</td>
         <td>{{ e['content_type'] or '—' }}</td>
         <td>{{ e['created_at'] | datetime }}</td>
+        <td>{{ e['expires_at'] | expiry }}</td>
         <td>{{ e['hit_count'] }}</td>
         <td>
           <form method="post" action="/delete/{{ e['url_hash'] }}" onsubmit="return confirm('Delete this cached file?');">
@@ -41,8 +88,46 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="6">No cached files yet.</td></tr>
+      <tr><td colspan="8">No cached files yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
+
+  <script>
+  // Refresh the workers panel in place so the search box isn't disturbed.
+  (function () {
+    var summary = document.getElementById('workers-summary');
+    var table = document.getElementById('workers-table');
+    function cell(tr, text) { var td = document.createElement('td'); td.textContent = text; tr.appendChild(td); return td; }
+    function render(d) {
+      if (!d.available) {
+        summary.textContent = 'Proxy not running / status unavailable';
+        table.style.display = 'none';
+        return;
+      }
+      var active = d.workers.filter(function (w) { return w.state === 'active'; }).length;
+      summary.textContent = active + ' active of max ' + d.max_workers + ' (min ' + d.min_workers +
+        ') · pool load ' + Math.round(d.avg_cpu) + '%';
+      var body = table.tBodies[0];
+      body.textContent = '';
+      d.workers.forEach(function (w) {
+        var tr = document.createElement('tr');
+        cell(tr, w.pid); cell(tr, w.state);
+        var td = document.createElement('td');
+        var bar = document.createElement('span'); bar.className = 'bar';
+        var fill = document.createElement('span'); fill.style.width = Math.min(w.cpu, 100) + '%';
+        bar.appendChild(fill); td.appendChild(bar);
+        td.appendChild(document.createTextNode(' ' + Math.round(w.cpu) + '%'));
+        tr.appendChild(td);
+        cell(tr, w.connections); cell(tr, Math.floor(w.uptime / 60) + 'm');
+        body.appendChild(tr);
+      });
+      table.style.display = '';
+    }
+    setInterval(function () {
+      fetch('/api/workers', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); }).then(render).catch(function () {});
+    }, 5000);
+  })();
+  </script>
 {% endblock %}

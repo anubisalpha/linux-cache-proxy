@@ -1,10 +1,16 @@
-"""SQLite-backed index over cached download files.
+"""SQLite-backed index over cached files.
 
 Files are stored on disk under CACHE_DIR, named by the sha256 of their
 source URL plus the original extension (so a downloaded .msi is still a
 real, openable .msi on disk). The DB just indexes metadata for the web UI.
+
+Two kinds of entry: "download" (installers/packages, long TTL) and "asset"
+(static web assets, short TTL). Several proxy worker processes share this
+DB and cache directory, so writes are atomic and connections wait on locks.
 """
 import hashlib
+import os
+import shutil
 import sqlite3
 import time
 from pathlib import Path
@@ -22,7 +28,9 @@ CREATE TABLE IF NOT EXISTS files (
     path TEXT NOT NULL,
     created_at REAL NOT NULL,
     last_hit_at REAL,
-    hit_count INTEGER NOT NULL DEFAULT 0
+    hit_count INTEGER NOT NULL DEFAULT 0,
+    expires_at REAL,
+    kind TEXT NOT NULL DEFAULT 'download'
 );
 CREATE TABLE IF NOT EXISTS access_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,6 +41,10 @@ CREATE TABLE IF NOT EXISTS access_log (
     hit INTEGER NOT NULL,
     bytes INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS counters (
+    name TEXT PRIMARY KEY,
+    value INTEGER NOT NULL DEFAULT 0
+);
 CREATE INDEX IF NOT EXISTS idx_access_log_ts ON access_log(ts);
 CREATE INDEX IF NOT EXISTS idx_access_log_client ON access_log(client_ip);
 CREATE INDEX IF NOT EXISTS idx_access_log_url_hash ON access_log(url_hash);
@@ -41,7 +53,9 @@ CREATE INDEX IF NOT EXISTS idx_access_log_url_hash ON access_log(url_hash);
 
 def _connect() -> sqlite3.Connection:
     config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(config.DB_PATH)
+    # Several proxy worker processes write here concurrently; wait for the
+    # lock rather than failing immediately with "database is locked".
+    conn = sqlite3.connect(config.DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -54,13 +68,36 @@ def init_db() -> None:
         # office-wide traffic, not just occasional installer downloads.
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(_SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Bring a pre-TTL database (no expires_at/kind columns) up to date.
+    Existing rows are downloads and get the current download TTL counted
+    from when they were cached."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(files)")}
+    if "kind" not in cols:
+        conn.execute("ALTER TABLE files ADD COLUMN kind TEXT NOT NULL DEFAULT 'download'")
+    if "expires_at" not in cols:
+        conn.execute("ALTER TABLE files ADD COLUMN expires_at REAL")
+    conn.execute(
+        "UPDATE files SET expires_at = created_at + ? WHERE expires_at IS NULL",
+        (config.DOWNLOAD_TTL,),
+    )
 
 
 def known_hashes() -> set:
-    """All cached url_hashes, for the proxy to hold in memory so a cache-miss
-    lookup (the overwhelming majority of requests) never touches SQLite."""
+    """url_hashes of entries that haven't expired, for the proxy to hold in
+    memory so a cache-miss lookup (the overwhelming majority of requests)
+    never touches SQLite."""
     with _connect() as conn:
-        return {row["url_hash"] for row in conn.execute("SELECT url_hash FROM files")}
+        return {
+            row["url_hash"]
+            for row in conn.execute(
+                "SELECT url_hash FROM files WHERE expires_at IS NULL OR expires_at > ?",
+                (time.time(),),
+            )
+        }
 
 
 def url_hash(url: str) -> str:
@@ -74,28 +111,49 @@ def get_entry(url_hash_: str) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
-def save_file(url: str, filename: str, content_type: str, data: bytes) -> Path:
+def save_file(
+    url: str,
+    filename: str,
+    content_type: str,
+    data: bytes,
+    kind: str = "download",
+    ttl: Optional[float] = None,
+) -> Path:
     h = url_hash(url)
     suffix = Path(filename).suffix or ""
     rel_path = f"{h}{suffix}"
     dest = config.CACHE_DIR / rel_path
-    dest.write_bytes(data)
+    # Write to a temp name then rename: another worker process may be
+    # serving this URL right now and must never see a half-written file.
+    tmp = config.CACHE_DIR / f".{rel_path}.{os.getpid()}.tmp"
+    tmp.write_bytes(data)
+    os.replace(tmp, dest)
 
+    if ttl is None:
+        ttl = config.WEBCACHE_TTL if kind == "asset" else config.DOWNLOAD_TTL
+    now = time.time()
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO files (url_hash, url, filename, content_type, size, path, created_at, hit_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            INSERT INTO files (url_hash, url, filename, content_type, size, path, created_at, hit_count, expires_at, kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             ON CONFLICT(url_hash) DO UPDATE SET
                 filename=excluded.filename,
                 content_type=excluded.content_type,
                 size=excluded.size,
                 path=excluded.path,
-                created_at=excluded.created_at
+                created_at=excluded.created_at,
+                expires_at=excluded.expires_at,
+                kind=excluded.kind
             """,
-            (h, url, filename, content_type, len(data), rel_path, time.time()),
+            (h, url, filename, content_type, len(data), rel_path, now, now + ttl, kind),
         )
     return dest
+
+
+def is_expired(entry, now: Optional[float] = None) -> bool:
+    exp = entry["expires_at"]
+    return exp is not None and exp <= (now if now is not None else time.time())
 
 
 def record_hit(url_hash_: str) -> None:
@@ -106,13 +164,24 @@ def record_hit(url_hash_: str) -> None:
         )
 
 
-def list_entries(search: Optional[str] = None, limit: int = 500, offset: int = 0):
+def list_entries(
+    search: Optional[str] = None,
+    limit: int = 500,
+    offset: int = 0,
+    kind: Optional[str] = None,
+):
     query = "SELECT * FROM files"
     params: list = []
+    where = []
     if search:
-        query += " WHERE filename LIKE ? OR url LIKE ?"
+        where.append("(filename LIKE ? OR url LIKE ?)")
         like = f"%{search}%"
         params += [like, like]
+    if kind:
+        where.append("kind = ?")
+        params.append(kind)
+    if where:
+        query += " WHERE " + " AND ".join(where)
     query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
     params += [limit, offset]
     with _connect() as conn:
@@ -207,3 +276,108 @@ def stats() -> dict:
             "COALESCE(SUM(size * hit_count),0) AS bytes_saved FROM files"
         ).fetchone()
         return dict(row)
+
+
+def purge_expired(now: Optional[float] = None) -> int:
+    """Delete expired files and their rows. Idempotent, so it's safe even if
+    two processes run it at once. Returns how many entries were removed."""
+    now = now if now is not None else time.time()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT url_hash, path FROM files WHERE expires_at IS NOT NULL AND expires_at <= ?",
+            (now,),
+        ).fetchall()
+        for row in rows:
+            (config.CACHE_DIR / row["path"]).unlink(missing_ok=True)
+            conn.execute("DELETE FROM files WHERE url_hash = ?", (row["url_hash"],))
+    return len(rows)
+
+
+def total_size() -> int:
+    with _connect() as conn:
+        return conn.execute("SELECT COALESCE(SUM(size),0) FROM files").fetchone()[0]
+
+
+def evict_to_quota(max_bytes: Optional[int] = None) -> int:
+    """Evict least-recently-hit entries until the cache fits in max_bytes
+    (0/None = unlimited). Returns how many entries were evicted."""
+    max_bytes = config.MAX_CACHE_BYTES if max_bytes is None else max_bytes
+    if not max_bytes:
+        return 0
+    evicted = 0
+    with _connect() as conn:
+        total = conn.execute("SELECT COALESCE(SUM(size),0) FROM files").fetchone()[0]
+        if total <= max_bytes:
+            return 0
+        rows = conn.execute(
+            "SELECT url_hash, path, size FROM files "
+            "ORDER BY COALESCE(last_hit_at, created_at) ASC"
+        ).fetchall()
+        for row in rows:
+            if total <= max_bytes:
+                break
+            (config.CACHE_DIR / row["path"]).unlink(missing_ok=True)
+            conn.execute("DELETE FROM files WHERE url_hash = ?", (row["url_hash"],))
+            total -= row["size"]
+            evicted += 1
+    return evicted
+
+
+def disk_usage() -> dict:
+    """Free/total space on the volume holding the cache."""
+    config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    u = shutil.disk_usage(config.CACHE_DIR)
+    return {"total": u.total, "used": u.used, "free": u.free}
+
+
+def prune_access_log(retention_days: Optional[int] = None) -> int:
+    """Delete access_log rows older than the retention window (0 = keep all)."""
+    days = config.RETENTION_DAYS if retention_days is None else retention_days
+    if not days:
+        return 0
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM access_log WHERE ts < ?", (time.time() - days * 86400,))
+        return cur.rowcount
+
+
+def add_counters(deltas: dict) -> None:
+    """Add to named counters (asset hits/misses/bytes saved), flushed in
+    batches by the proxy rather than written per request."""
+    if not deltas:
+        return
+    with _connect() as conn:
+        for name, value in deltas.items():
+            conn.execute(
+                "INSERT INTO counters (name, value) VALUES (?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET value = value + excluded.value",
+                (name, int(value)),
+            )
+
+
+def get_counters() -> dict:
+    with _connect() as conn:
+        return {r["name"]: r["value"] for r in conn.execute("SELECT name, value FROM counters")}
+
+
+def hourly_client_stats(since_ts: Optional[float] = None, client_ip: Optional[str] = None):
+    """Per-client, per-hour requests/hits/bytes/new downloads (MISS-STORED)
+    from access_log. Computed on demand from the ts/client indexes."""
+    query = (
+        "SELECT client_ip, CAST(ts / 3600 AS INTEGER) * 3600 AS hour, "
+        "COUNT(*) AS requests, COALESCE(SUM(hit),0) AS hits, "
+        "COALESCE(SUM(bytes),0) AS bytes, COALESCE(SUM(1 - hit),0) AS new_downloads "
+        "FROM access_log"
+    )
+    where = []
+    params: list = []
+    if since_ts:
+        where.append("ts >= ?")
+        params.append(since_ts)
+    if client_ip:
+        where.append("client_ip = ?")
+        params.append(client_ip)
+    if where:
+        query += " WHERE " + " AND ".join(where)
+    query += " GROUP BY client_ip, hour ORDER BY client_ip, hour"
+    with _connect() as conn:
+        return [dict(r) for r in conn.execute(query, params).fetchall()]

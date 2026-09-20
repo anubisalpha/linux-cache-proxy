@@ -17,7 +17,9 @@ for h in config.NEVER_INTERCEPT_HOSTS:
     print(config.host_to_regex(h))
 ")
 
-exec mitmdump \
+# The supervisor runs a pool of mitmdump workers sharing the listen port
+# (min/max in config.toml [proxy]); everything below is passed to each one.
+exec python3 -m cache_proxy.supervisor \
   --listen-port "${CACHE_PROXY_PORT:-8080}" \
   --set confdir="${CACHE_PROXY_CONFDIR:-/var/lib/cache-proxy/mitmproxy-ca}" \
   "${IGNORE_HOSTS_ARGS[@]}" \

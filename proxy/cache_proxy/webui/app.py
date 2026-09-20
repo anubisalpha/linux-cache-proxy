@@ -3,10 +3,12 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import config, store
+import time
+
+from .. import analytics, config, store, workers
 from .auth import require_auth
 
 app = FastAPI(title="Cache Proxy", dependencies=[Depends(require_auth)])
@@ -26,8 +28,22 @@ def _format_datetime(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
+def _format_expiry(ts: Optional[float]) -> str:
+    if ts is None:
+        return "—"
+    remaining = ts - time.time()
+    if remaining <= 0:
+        return "expired"
+    if remaining < 3600:
+        return f"{int(remaining // 60)}m"
+    if remaining < 86400:
+        return f"{remaining / 3600:.1f}h"
+    return f"{remaining / 86400:.1f}d"
+
+
 templates.env.filters["human_size"] = _human_size
 templates.env.filters["datetime"] = _format_datetime
+templates.env.filters["expiry"] = _format_expiry
 
 
 @app.on_event("startup")
@@ -36,13 +52,31 @@ def startup() -> None:
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request, q: str = Query(default="")):
-    entries = store.list_entries(search=q or None)
+def index(request: Request, q: str = Query(default=""), kind: str = Query(default="")):
+    kind = kind if kind in ("download", "asset") else ""
+    counters = store.get_counters()
+    disk = store.disk_usage()
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"entries": entries, "stats": store.stats(), "q": q, "active": "files"},
+        {
+            "entries": store.list_entries(search=q or None, kind=kind or None),
+            "stats": store.stats(),
+            "q": q,
+            "kind": kind,
+            "workers": workers.read_worker_status(),
+            "counters": counters,
+            "disk": disk,
+            "disk_low": disk["total"] and disk["free"] / disk["total"] < 0.1,
+            "max_cache_bytes": config.MAX_CACHE_BYTES,
+            "active": "files",
+        },
     )
+
+
+@app.get("/api/workers")
+def api_workers():
+    return JSONResponse(workers.read_worker_status())
 
 
 @app.get("/usage", response_class=HTMLResponse)
@@ -61,6 +95,51 @@ def usage(request: Request, days: int = Query(default=7), client: Optional[str] 
             "active": "usage",
         },
     )
+
+
+def _hourly(hours: int, client: Optional[str]):
+    since_ts = time.time() - hours * 3600
+    return analytics.client_series(store.hourly_client_stats(since_ts=since_ts, client_ip=client))
+
+
+@app.get("/api/hourly-stats")
+def api_hourly_stats(hours: int = Query(default=0), client: Optional[str] = Query(default=None)):
+    """Raw per-client hourly series, for Grafana's JSON API datasource or
+    anything else that wants the data."""
+    hours = hours or config.LOOKBACK_HOURS
+    series = _hourly(hours, client)
+    current_hour = int(time.time() // 3600) * 3600
+    return {
+        "hours": hours,
+        "series": series,
+        "anomalies": analytics.detect_anomalies(series, latest_hour=current_hour),
+    }
+
+
+@app.get("/stats", response_class=HTMLResponse)
+def stats_page(request: Request, hours: int = Query(default=0)):
+    hours = hours or config.LOOKBACK_HOURS
+    series = _hourly(hours, None)
+    current_hour = int(time.time() // 3600) * 3600
+    return templates.TemplateResponse(
+        request,
+        "stats.html",
+        {
+            "anomalies": analytics.detect_anomalies(series, latest_hour=current_hour),
+            "summaries": analytics.client_summaries(series),
+            "hours": hours,
+            "factor": config.ANOMALY_FACTOR,
+            "min_history": config.MIN_HISTORY_HOURS,
+            "current_hour": current_hour,
+            "active": "stats",
+        },
+    )
+
+
+@app.post("/purge-expired")
+def purge_expired():
+    store.purge_expired()
+    return RedirectResponse("/", status_code=303)
 
 
 @app.post("/delete/{url_hash}")

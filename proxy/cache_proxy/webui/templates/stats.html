@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="stats">
+    Per-client usage by hour over the last {{ hours }} hours. Usage means cache hits
+    and newly stored downloads only &mdash; not all proxied browsing. A client is flagged
+    when its current hour exceeds {{ factor }}&times; its own average, once it has at
+    least {{ min_history }} hours of history. Raw data: <a href="/api/hourly-stats">/api/hourly-stats</a>.
+  </div>
+
+  <h2>Flagged this hour</h2>
+  <table>
+    <thead>
+      <tr><th>Client</th><th>Metric</th><th>This hour</th><th>Usual (avg/hour)</th><th>Ratio</th></tr>
+    </thead>
+    <tbody>
+      {% for a in anomalies %}
+      <tr>
+        <td><a href="/usage?client={{ a.client_ip }}">{{ a.client_ip }}</a></td>
+        <td>{{ a.metric.replace('_', ' ') }}</td>
+        <td>{{ a.value | human_size if a.metric == 'bytes' else a.value }}</td>
+        <td>{{ a.baseline | human_size if a.metric == 'bytes' else a.baseline | round(1) }}</td>
+        <td>{{ a.ratio | round(1) }}&times;</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">Nothing unusual this hour.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Per-client summary</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Client</th>
+        <th>Requests/hour (avg)</th><th>Requests (latest hour)</th>
+        <th>Bytes/hour (avg)</th><th>Bytes (latest hour)</th>
+        <th>New downloads/hour (avg)</th><th>New downloads (latest hour)</th>
+        <th>Latest hour</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in summaries %}
+      <tr>
+        <td><a href="/usage?client={{ c.client_ip }}">{{ c.client_ip }}</a></td>
+        <td>{{ c.avg_requests | round(1) }}</td><td>{{ c.latest_requests }}</td>
+        <td>{{ c.avg_bytes | human_size }}</td><td>{{ c.latest_bytes | human_size }}</td>
+        <td>{{ c.avg_new_downloads | round(1) }}</td><td>{{ c.latest_new_downloads }}</td>
+        <td>{{ c.latest_hour | datetime }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8">No activity recorded in this window.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

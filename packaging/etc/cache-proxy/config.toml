@@ -15,6 +15,14 @@ min_size_mb = 1
 # than risk holding a multi-GB ISO entirely in RAM.
 max_buffer_size_mb = 512
 
+# How long a cached download is served before it is fetched again.
+download_ttl_days = 30
+
+# Cap on the total size of the cache in GB (downloads and web assets
+# together); 0 = unlimited. Once exceeded, the least recently used entries
+# are evicted first.
+max_size_gb = 0
+
 # File extensions treated as cacheable downloads (matched against the URL
 # path, case-insensitive).
 extensions = [
@@ -43,6 +51,50 @@ content_types = [
 # Host exclusion lists live in their own files, not here:
 #   /etc/cache-proxy/never-cache-hosts.conf
 #   /etc/cache-proxy/never-intercept-hosts.conf
+
+# Short-lived cache for static web assets (JS, CSS, images, fonts). HTML
+# pages are deliberately never cached. The origin's own headers are always
+# respected: responses marked no-store/private/no-cache, that set cookies,
+# or that vary on anything but Accept-Encoding are not stored, and a shorter
+# max-age from the origin wins over ttl_minutes.
+[webcache]
+enabled = true
+ttl_minutes = 60
+max_size_mb = 5
+extensions = [
+    ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf",
+]
+content_types = [
+    "text/css", "application/javascript", "text/javascript",
+    "image/png", "image/jpeg", "image/gif", "image/webp",
+    "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon",
+    "font/woff", "font/woff2", "font/ttf", "font/otf",
+]
+
+# Worker pool. One mitmproxy process uses about one CPU core, so the proxy
+# runs several. It starts min_workers, adds one when the pool's average CPU
+# stays above scale_up_cpu_pct, and retires an idle one (no client
+# connections) after the pool has been under scale_down_cpu_pct for
+# scale_down_idle_seconds. max_workers = 0 means "number of CPUs".
+[proxy]
+min_workers = 2
+max_workers = 0
+scale_up_cpu_pct = 70
+scale_down_cpu_pct = 20
+scale_down_idle_seconds = 300
+sample_interval_seconds = 5
+status_file = "/var/lib/cache-proxy/workers.json"
+
+# Usage analytics (/stats, /api/hourly-stats). A client is flagged when its
+# current hour exceeds anomaly_factor x its own average, once it has at
+# least min_history_hours of history. access_log rows older than
+# retention_days are pruned daily (0 = keep forever).
+[analytics]
+anomaly_factor = 3.0
+min_history_hours = 6
+lookback_hours = 168
+retention_days = 90
 
 [webui]
 port = 443
