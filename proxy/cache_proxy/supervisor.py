@@ -269,6 +269,10 @@ class Supervisor:
 
         while not self.stopping:
             time.sleep(config.SAMPLE_INTERVAL)
+            if self.stopping:
+                # systemd signals the whole service at once, so workers may
+                # already be gone; that's a shutdown, not a crash.
+                break
             self._reap()
             # Replace crashed workers up to the minimum straight away.
             while not self.stopping and len([w for w in self.workers if not w.retiring]) < config.MIN_WORKERS:
