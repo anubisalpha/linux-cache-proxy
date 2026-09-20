@@ -92,9 +92,14 @@ A request `Cookie` header does **not** prevent caching; browsers send cookies
 on most static-asset requests, so ignoring them would defeat the cache. The
 response-side rules above are the safeguard.
 
-Asset hits are counted (hits, stored, bytes saved; shown on the main page)
-but are **not** written to the usage log, so ordinary browsing does not
-drown out the download statistics and anomaly detection.
+Asset hits are counted (hits, stored, bytes saved; shown on the main page,
+and per file in the file list) but are **not** written to the usage log, so
+ordinary browsing does not drown out the download statistics and anomaly
+detection. To keep this cheap the counts are tallied in memory and written
+to the database in batches about every ten seconds, so they can lag briefly,
+and a hit in the last few seconds before a restart may not be recorded. Asset
+hits also count when choosing what to evict once the cache is over its size
+limit, so assets in active use are kept.
 
 ---
 

@@ -73,8 +73,8 @@ This README is the overview. The detail is in `docs/`:
   `no-cache`, sets a cookie, needs `Authorization`, or varies on anything
   but `Accept-Encoding`, and a shorter origin `max-age` wins. An expired
   entry is refetched and its lifetime restarts; expired files are purged
-  hourly. Asset traffic is counted (hits/stored/bytes saved) but not written
-  to `access_log`, so it doesn't drown out the usage statistics.
+  hourly. Asset traffic is counted (hits/stored/bytes saved, and per file) but not
+  written to `access_log`, so it doesn't drown out the usage statistics.
 - **Request coalescing**: when several clients ask for the same
   not-yet-cached download or static asset at once (a "stampede" on a fresh
   installer), only the first goes upstream. It takes a per-URL file lock

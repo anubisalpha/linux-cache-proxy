@@ -360,3 +360,19 @@ def test_coalescing_can_be_turned_off(origin, tmp_path):
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+
+def test_asset_hits_show_up_per_file(origin, single_proxy):
+    import sqlite3
+    proxy, tmp = single_proxy
+    url = origin["base"] + "/app.js"
+    assert _get(proxy, url).headers["X-Cache-Proxy"] == "MISS-STORED"
+    for _ in range(3):
+        assert _get(proxy, url).headers["X-Cache-Proxy"] == "HIT"
+
+    def flushed():
+        row = sqlite3.connect(tmp / "index.db").execute(
+            "SELECT hit_count, last_hit_at FROM files WHERE kind='asset'").fetchone()
+        return row and row[0] == 3 and row[1] is not None
+
+    assert _wait_until(flushed, seconds=10)  # flushed on the next refresh tick

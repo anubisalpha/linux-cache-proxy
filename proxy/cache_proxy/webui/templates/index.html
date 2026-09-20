@@ -30,7 +30,7 @@
     {{ stats.count }} files cached &middot;
     {{ stats.total_size | human_size }} on disk
     {% if max_cache_bytes %}(quota {{ max_cache_bytes | human_size }}){% endif %} &middot;
-    {{ stats.total_hits }} cache hits &middot;
+    {{ stats.total_hits }} download hits &middot;
     {{ stats.bytes_saved | human_size }} of downloads served from cache
     {% if counters.get('asset_hits') or counters.get('asset_misses') %}
       &middot; web assets: {{ counters.get('asset_hits', 0) }} hits /

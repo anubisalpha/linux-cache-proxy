@@ -161,6 +161,7 @@ class CacheAddon:
     def __init__(self):
         self._known_hashes: set = set()
         self._counters: dict = {}
+        self._asset_hits: dict = {}  # url_hash -> hits not yet written to the DB
         # flow.id -> (lock fd, taken at): fetches this worker is leading.
         self._leading: dict = {}
         self._token = secrets.token_hex(16)
@@ -186,9 +187,12 @@ class CacheAddon:
                 # Other workers add (and the supervisor purges) entries; pick
                 # that up. Off the event loop so a slow query can't stall traffic.
                 self._known_hashes = await loop.run_in_executor(None, store.known_hashes)
-                if self._counters:
-                    deltas, self._counters = self._counters, {}
-                    await loop.run_in_executor(None, store.add_counters, deltas)
+                counters, asset_hits = self._take_stats()
+                try:
+                    await loop.run_in_executor(None, self._write_stats, counters, asset_hits)
+                except Exception:
+                    self._restore_stats(counters, asset_hits)
+                    raise
                 # Safety net: never let a leader that somehow missed every
                 # release hook keep a URL locked past the waiters' patience.
                 stale = time.monotonic() - max(2 * config.COALESCE_WAIT, 300)
@@ -196,6 +200,35 @@ class CacheAddon:
                     self._release(fid)
             except Exception as e:
                 logger.warning("cache refresh failed: %s", e)
+
+    # Stats tallies (aggregate counters and per-asset hit counts) live in
+    # memory and are written to the database in batches. The snapshot is taken
+    # on the event-loop thread, the write can run elsewhere, and a failed
+    # write puts the tallies back so nothing is lost.
+
+    def _take_stats(self):
+        counters, self._counters = self._counters, {}
+        asset_hits, self._asset_hits = self._asset_hits, {}
+        return counters, asset_hits
+
+    @staticmethod
+    def _write_stats(counters: dict, asset_hits: dict) -> None:
+        store.add_counters(counters)
+        store.record_hits(asset_hits)
+
+    def _restore_stats(self, counters: dict, asset_hits: dict) -> None:
+        for k, v in counters.items():
+            self._counters[k] = self._counters.get(k, 0) + v
+        for k, v in asset_hits.items():
+            self._asset_hits[k] = self._asset_hits.get(k, 0) + v
+
+    def _flush_stats(self) -> None:
+        counters, asset_hits = self._take_stats()
+        try:
+            self._write_stats(counters, asset_hits)
+        except Exception:
+            self._restore_stats(counters, asset_hits)
+            raise
 
     def _count(self, name: str, n: int = 1) -> None:
         self._counters[name] = self._counters.get(name, 0) + n
@@ -299,6 +332,7 @@ class CacheAddon:
 
         if is_asset:
             self._count("asset_hits")
+            self._asset_hits[h] = self._asset_hits.get(h, 0) + 1
             self._count("asset_bytes_saved", size)
         else:
             store.record_hit(h)

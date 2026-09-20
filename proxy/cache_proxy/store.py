@@ -169,6 +169,20 @@ def record_hit(url_hash_: str) -> None:
         )
 
 
+def record_hits(deltas: dict) -> None:
+    """Add per-file hit counts in one go ({url_hash: hits}). Used for static
+    assets, whose hits are tallied in memory and flushed in batches instead of
+    costing a database write per request."""
+    if not deltas:
+        return
+    now = time.time()
+    with _connect() as conn:
+        conn.executemany(
+            "UPDATE files SET hit_count = hit_count + ?, last_hit_at = ? WHERE url_hash = ?",
+            [(n, now, h) for h, n in deltas.items()],
+        )
+
+
 def list_entries(
     search: Optional[str] = None,
     limit: int = 500,
@@ -277,8 +291,10 @@ def stats() -> dict:
     with _connect() as conn:
         row = conn.execute(
             "SELECT COUNT(*) AS count, COALESCE(SUM(size),0) AS total_size, "
-            "COALESCE(SUM(hit_count),0) AS total_hits, "
-            "COALESCE(SUM(size * hit_count),0) AS bytes_saved FROM files"
+            # Hits and bytes saved are for downloads only; web-asset traffic is
+            # reported separately (counters), so it isn't counted twice.
+            "COALESCE(SUM(CASE WHEN kind='download' THEN hit_count END),0) AS total_hits, "
+            "COALESCE(SUM(CASE WHEN kind='download' THEN size * hit_count END),0) AS bytes_saved FROM files"
         ).fetchone()
         return dict(row)
 

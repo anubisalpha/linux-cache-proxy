@@ -275,3 +275,12 @@ def test_hourly_stats_json_and_flagged_page(webui_server):
     assert "Flagged this hour" in page and "10.9.9.9" in page
     quiet = __import__("json").loads(_get(webui_server + "/api/hourly-stats?client=nobody").read())
     assert quiet["series"] == {} and quiet["anomalies"] == []
+
+
+def test_summary_counts_download_hits_only_but_lists_asset_hits(webui_server):
+    store.save_file("https://cdn.example.com/app.js", "app.js", "text/javascript", b"js", kind="asset", ttl=1800)
+    store.record_hits({store.url_hash("https://cdn.example.com/app.js"): 42})
+    body = _get(webui_server + "/").read().decode()
+    assert "0 download hits" in body  # a.exe has none; the 42 asset hits aren't folded in
+    row = body.split("app.js</a>", 1)[1].split("</tr>", 1)[0]
+    assert "<td>42</td>" in row  # ...but the file's own Hits column shows them

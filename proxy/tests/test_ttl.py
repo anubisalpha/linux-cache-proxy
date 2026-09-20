@@ -228,3 +228,80 @@ def test_save_file_leaves_no_temp_files():
 ])
 def test_parse_range(header, size, expected):
     assert addon.parse_range(header, size) == expected
+
+
+# ---- per-file hit counts for assets ----------------------------------------
+
+def _asset_addon(url="https://a/x.js"):
+    store.save_file(url, "x.js", "text/javascript", b"body", kind="asset", ttl=1000)
+    a = addon.CacheAddon()
+    a.load(None)
+    return a, url
+
+
+def _hit(a, url):
+    flow = _flow(url)
+    flow.client_conn.peername = ("10.0.0.5", 1)
+    flow.response = None
+    a.request(flow)
+    assert flow.response is not None
+
+
+def test_record_hits_updates_count_and_last_hit_time():
+    store.save_file("https://a/x.js", "x.js", "t", b"b", kind="asset", ttl=1000)
+    h = store.url_hash("https://a/x.js")
+    before = time.time()
+    store.record_hits({h: 3, "0" * 64: 9})  # unknown hash is ignored
+    e = store.get_entry(h)
+    assert e["hit_count"] == 3 and e["last_hit_at"] >= before
+    store.record_hits({h: 2})
+    assert store.get_entry(h)["hit_count"] == 5
+    store.record_hits({})  # no-op
+
+
+def test_asset_hits_are_tallied_in_memory_then_flushed_in_one_batch():
+    a, url = _asset_addon()
+    h = store.url_hash(url)
+    for _ in range(4):
+        _hit(a, url)
+    assert a._asset_hits == {h: 4}
+    assert store.get_entry(h)["hit_count"] == 0  # not written per request
+    a._flush_stats()
+    assert store.get_entry(h)["hit_count"] == 4
+    assert a._asset_hits == {} and store.get_counters()["asset_hits"] == 4
+    a._flush_stats()  # nothing new: no double counting
+    assert store.get_entry(h)["hit_count"] == 4
+
+
+def test_failed_flush_keeps_the_tallies_for_the_next_one(monkeypatch):
+    a, url = _asset_addon()
+    h = store.url_hash(url)
+    _hit(a, url)
+    with monkeypatch.context() as m:  # scoped, so the fixture's temp-dir patches stay
+        m.setattr(store, "record_hits", MagicMock(side_effect=RuntimeError("db busy")))
+        with pytest.raises(RuntimeError):
+            a._flush_stats()
+    assert a._asset_hits == {h: 1}  # put back
+    _hit(a, url)
+    a._flush_stats()
+    assert store.get_entry(h)["hit_count"] == 2
+
+
+def test_summary_hits_and_bytes_saved_are_downloads_only():
+    store.save_file("https://a/setup.exe", "setup.exe", "t", b"x" * 100)
+    store.record_hits({store.url_hash("https://a/setup.exe"): 2})
+    store.save_file("https://a/x.js", "x.js", "t", b"y" * 10, kind="asset", ttl=1000)
+    store.record_hits({store.url_hash("https://a/x.js"): 50})
+    s = store.stats()
+    assert s["count"] == 2  # both are cached files
+    assert s["total_hits"] == 2 and s["bytes_saved"] == 200  # assets aren't double-counted
+
+
+def test_recently_hit_asset_survives_quota_eviction():
+    store.save_file("https://a/old.js", "old.js", "t", b"x" * 100, kind="asset", ttl=1000)
+    store.save_file("https://a/busy.js", "busy.js", "t", b"x" * 100, kind="asset", ttl=1000)
+    with store._connect() as conn:  # both cached long ago
+        conn.execute("UPDATE files SET created_at = created_at - 5000")
+    store.record_hits({store.url_hash("https://a/busy.js"): 7})  # ...but one is in use
+    assert store.evict_to_quota(max_bytes=150) == 1
+    assert {r["filename"] for r in store.list_entries()} == {"busy.js"}

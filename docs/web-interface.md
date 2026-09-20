@@ -63,7 +63,8 @@ numbers.
 **Summary line.**
 
 - files cached and total size on disk (and the quota, if you set one);
-- total cache hits and how much download traffic was served from the cache;
+- download hits and how much download traffic was served from the cache
+  (downloads only; web assets are counted separately, next);
 - web-asset hits, how many assets are stored and how much they saved;
 - how many duplicate fetches were avoided when several clients asked for the
   same new file at once (only shown once this has happened).
@@ -88,14 +89,8 @@ reclaim space sooner.
 | Size, Type | Size on disk and the content type the origin reported. |
 | Cached | When it was fetched (server local time). |
 | Expires in | Time left before it must be fetched again: `59m`, `3.5h`, `30.0d`, or `expired`. |
-| Hits | How many times it has been served from cache. |
+| Hits | How many times it has been served from cache. For web assets this can lag reality by up to about ten seconds, because those counts are written in batches. |
 | Delete | Removes that entry and its file (asks to confirm). |
-
-> **Known quirk:** the *Hits* column is always `0` for web assets, even
-> though they are being served from cache. Asset hits are only counted in
-> total (the "web assets: N hits" figure in the summary line), because
-> recording each one would mean a database write for every page view. The
-> per-file hit count is accurate for downloads.
 
 ---
 
