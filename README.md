@@ -16,6 +16,17 @@ Three parts, each solving a different traffic type:
 CDN behavior; the correct tool is WSUS, not a generic proxy. Skipped for
 now per project decision — revisit if it becomes a priority.
 
+## Documentation
+
+This README is the overview. The detail is in `docs/`:
+
+| Guide | What's in it |
+|---|---|
+| [Building and installing](docs/building.md) | Build prerequisites, building the `.deb` (on Ubuntu or in Docker), step-by-step install and first-run setup, connecting clients, checking it works, what is installed where, the Docker demo, running the tests |
+| [Configuration reference](docs/configuration.md) | Every `config.toml` setting with defaults and guidance, the host exclusion lists, settings that live outside the config file, environment variable overrides |
+| [Web interface](docs/web-interface.md) | A tour of each page with screenshots, how to read the stats page and its flags, the JSON API, security notes |
+| [Operations](docs/operations.md) | Services and logs, checking caching works, sizing, network and security, upgrading, backup and restore, troubleshooting, removal |
+
 ## 1. General download cache (`proxy/`)
 
 - **Core**: [mitmproxy](https://mitmproxy.org/) in explicit-proxy mode,
@@ -94,6 +105,9 @@ now per project decision — revisit if it becomes a priority.
 
 ### Installing the package
 
+*(Short version. [docs/building.md](docs/building.md) has the full
+walk-through, including building the package and checking it works.)*
+
 Everything under `proxy/` ships as a single `.deb`, built with both
 Python venvs bundled in (no internet access or pip resolution needed on
 the target machine):
@@ -147,6 +161,9 @@ Preferences → Control Panel Settings → Internet Settings) or WPAD:
 `Proxy server: <server-ip>:8080`.
 
 ### Configuration — `/etc/cache-proxy/`
+
+*Every setting, with defaults and guidance, is in
+[docs/configuration.md](docs/configuration.md).*
 
 | File | Contents |
 |---|---|
@@ -286,21 +303,35 @@ one). `https://localhost:8443/`, click through the cert warning.
 ## Files
 
 ```
+docs/
+  building.md              # build, install, first-run setup, Docker demo, tests
+  configuration.md         # every config.toml setting, host lists, env overrides
+  web-interface.md         # tour of the web UI, stats flagging, JSON API
+  operations.md            # logs, sizing, security, upgrade, backup, troubleshooting
+  images/                  # screenshots used by the docs (demo data)
 proxy/
   requirements-proxy.txt   # mitmproxy + pytest
   requirements-webui.txt   # fastapi/uvicorn/jinja2 + pytest
   run_proxy.sh / run_webui.sh   # read config.toml/host-list files at startup
   cache_proxy/
     config.py              # loads /etc/cache-proxy/config.toml + host-list files
-    store.py                # SQLite index + on-disk file storage + access log
-    addon.py                 # mitmproxy addon (cache, exclusion lists, streaming)
+    store.py               # SQLite index, file storage, usage log, quota/expiry,
+                           #   hourly stats, per-URL fetch locks
+    addon.py               # mitmproxy addon: cache hits/misses, download vs asset
+                           #   rules, TTLs, request coalescing, Range/streamed hits
+    supervisor.py          # worker pool: scaling, status file, housekeeping jobs
+    worker_main.py         # launches one worker with SO_REUSEPORT enabled
+    workers.py             # reads the supervisor's status snapshot for the UI
+    analytics.py           # hourly per-client series and anomaly detection
     webui/
-      app.py                  # FastAPI app: files list, usage, download, delete
-      auth.py                  # HTTP Basic Auth, PBKDF2 password hashing
-      hash_password.py          # CLI: generate a password_hash for config.toml
-      templates/ (base/index/usage.html)
+      app.py               # FastAPI app: files, usage, stats, JSON API, actions
+      auth.py              # HTTP Basic Auth, PBKDF2 password hashing
+      hash_password.py     # CLI: generate a password_hash for config.toml
+      templates/           # base, index (files + worker panel), usage, stats
   systemd/cache-proxy.service, cache-webui.service
-  tests/                   # pytest: store, config, auth, webui, addon (unit + integration)
+  tests/                   # pytest: store, config, auth, webui, addon (unit +
+                           #   integration), TTLs, analytics, supervisor, worker
+                           #   pool and coalescing end-to-end
 docker/Dockerfile
 compose.yml
 packaging/
@@ -313,4 +344,5 @@ apt-cacher-ng/
 rpm-cache/
   nginx-rpm-cache.conf
   configure-client.sh
+TODO.md                   # known gaps and next steps
 ```

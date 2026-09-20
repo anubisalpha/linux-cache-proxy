@@ -85,6 +85,12 @@ chmod 644 "$PKG_ROOT/etc/systemd/system/"*.service
 
 cp "$REPO_ROOT/README.md" "$PKG_ROOT/usr/share/doc/cache-proxy/"
 chmod 644 "$PKG_ROOT/usr/share/doc/cache-proxy/README.md"
+# The README links to the guides in docs/ (and TODO.md), so ship those too
+# or the links are dead on the installed machine.
+cp -r "$REPO_ROOT/docs" "$PKG_ROOT/usr/share/doc/cache-proxy/"
+cp "$REPO_ROOT/TODO.md" "$PKG_ROOT/usr/share/doc/cache-proxy/"
+find "$PKG_ROOT/usr/share/doc/cache-proxy" -type d -exec chmod 755 {} +
+find "$PKG_ROOT/usr/share/doc/cache-proxy" -type f -exec chmod 644 {} +
 
 # --- DEBIAN control files ---
 sed "s/VERSION_PLACEHOLDER/${VERSION}/" "$REPO_ROOT/packaging/debian/control" > "$PKG_ROOT/DEBIAN/control"
