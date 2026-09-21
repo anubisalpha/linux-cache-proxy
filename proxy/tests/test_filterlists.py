@@ -22,6 +22,7 @@ def _tgz(files: dict) -> bytes:
 @pytest.fixture
 def lists(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "FILTER_LISTS_DIR", tmp_path / "lists")
+    monkeypatch.setattr(config, "CATEGORIES_FILE", tmp_path / "no-such-categories.conf")
     monkeypatch.setattr(config, "FILTER_BLOCK_CATEGORIES", ["adult", "malware", "phishing"])
     monkeypatch.setattr(config, "FILTER_SOURCES", [
         {"name": "ut1", "type": "ut1", "url": "http://x/{category}.tgz", "categories": ["adult", "gambling"]},
@@ -61,6 +62,22 @@ def test_update_writes_each_source_and_only_enforced_categories(lists):
 
 def tmp_path_of(lists_dir):
     return lists_dir.parent
+
+
+def test_only_categories_limits_a_run(lists):
+    served, d = lists
+    served["http://x/adult.tgz"] = _tgz({"adult/domains": "a.example\n"})
+    served["http://x/phish"] = b"p1.example\n"
+    (r,) = filterlists.update_all(only_categories=["phishing"])
+    assert r["category"] == "phishing" and not (d / "adult").exists()
+
+
+def test_the_saved_selection_decides_what_is_downloaded(lists, tmp_path):
+    served, d = lists
+    (tmp_path / "no-such-categories.conf").write_text("adult\n")  # file present: it wins over the default
+    served["http://x/adult.tgz"] = _tgz({"adult/domains": "a.example\n"})
+    results = filterlists.update_all()
+    assert [(r["source"], r["category"]) for r in results] == [("ut1", "adult")]
 
 
 def test_hourly_run_fetches_only_sources_marked_hourly(lists, monkeypatch):

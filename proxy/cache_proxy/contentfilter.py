@@ -150,7 +150,11 @@ class ContentFilter:
         self._allowed_file = allowed_file or config.ALLOWED_HOSTS_FILE
         self._patterns_file = patterns_file or config.BLOCKED_URL_PATTERNS_FILE
         self._lists_dir = lists_dir or config.FILTER_LISTS_DIR
-        self._categories = [c.lower() for c in (config.FILTER_BLOCK_CATEGORIES if categories is None else categories)]
+        # An explicit list is fixed (tests); otherwise follow the saved
+        # selection (config.block_categories()) so the Categories page takes
+        # effect without a restart.
+        self._fixed_categories = [c.lower() for c in categories] if categories is not None else None
+        self._categories: list = []
         self._sig = None
         self.blocked: set = set()
         self.allowed: set = set()
@@ -158,9 +162,14 @@ class ContentFilter:
         self.indexes: list = []          # [(HashIndex, category, source)]
         self.reload_if_changed()
 
+    def _current_categories(self) -> list:
+        return self._fixed_categories if self._fixed_categories is not None else config.block_categories()
+
     def _signature(self):
-        sig = [_stat_sig(self._blocked_file), _stat_sig(self._allowed_file), _stat_sig(self._patterns_file)]
-        for cat in self._categories:
+        categories = self._current_categories()
+        sig = [_stat_sig(self._blocked_file), _stat_sig(self._allowed_file), _stat_sig(self._patterns_file),
+               tuple(categories)]
+        for cat in categories:
             try:
                 files = sorted((self._lists_dir / cat).glob("*.idx"))
             except OSError:
@@ -184,6 +193,7 @@ class ContentFilter:
         if sig == self._sig:
             return False
         self._sig = sig
+        self._categories = self._current_categories()
         blocked = parse_host_lines(self._read(self._blocked_file))
         allowed = parse_host_lines(self._read(self._allowed_file))
         patterns = parse_patterns(self._read(self._patterns_file))

@@ -112,6 +112,8 @@ retention_days = 90
 [filtering]
 enabled = false
 lists_dir = "/var/lib/cache-proxy/filter-lists"
+# Default only: the web UI Categories page saves the real selection to
+# /etc/cache-proxy/filter-categories.conf, which overrides this when present.
 block_categories = ["adult", "gambling", "malware", "phishing"]
 
 # Where the lists come from. type: "ut1" (per-category tarball, {category} is
@@ -127,7 +129,8 @@ block_categories = ["adult", "gambling", "malware", "phishing"]
 name = "ut1"          # Universite Toulouse Capitole, CC BY-SA 4.0
 type = "ut1"
 url = "https://dsi.ut-capitole.fr/blacklists/download/{category}.tar.gz"
-categories = ["adult", "gambling", "phishing"]
+# No "categories" key: offers every UT1 category; only the ones you enable
+# on the web UI Categories page are downloaded.
 
 [[filtering.sources]]
 # UT1's own malware tarball currently contains the phishing list, so this

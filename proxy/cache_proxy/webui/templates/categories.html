@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Categories - Cache Proxy{% endblock %}
+{% block content %}
+  <style>
+    /* One fixed grid for every group so the columns line up between tables. */
+    .category-group table { table-layout: fixed; }
+    .category-group th:nth-child(1) { width: 2.5rem; }
+    .category-group th:nth-child(2) { width: 12rem; }
+    .category-group th:nth-child(4) { width: 12rem; }
+    .category-group th:nth-child(5) { width: 6rem; }
+    .category-group th:nth-child(6) { width: 8.5rem; }
+    .category-group td { overflow-wrap: anywhere; }
+  </style>
+  {% if msg %}<div class="{{ 'panel' if ok else 'warn' }}">{{ msg }}</div>{% endif %}
+
+  <div class="panel">
+    <strong>Content filtering:</strong>
+    {{ 'on' if filtering_enabled else 'OFF (set [filtering] enabled = true in config.toml)' }}
+    &middot; {{ selected | length }} of {{ total }} categories enforced.
+    <p style="margin:.5rem 0 0">
+      Tick the categories to block and save. The selection is written to
+      <code>{{ categories_file }}</code>. The proxy picks it up within about 10 seconds, and the lists for
+      newly ticked categories are downloaded in the background (the biggest, adult, is ~18 MB).
+      Untick a category to stop blocking it. Downloaded lists are kept.
+    </p>
+    {% if not writable %}
+      <p class="warn" style="margin:.5rem 0 0">
+        <code>{{ categories_file }}</code> is not writable by this service, so changes can't be saved.
+        On a package install run: <code>sudo chown root:cacheproxy {{ categories_file }} &amp;&amp; sudo chmod 664 {{ categories_file }}</code>
+      </p>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/categories">
+    <div class="filters">
+      <input type="text" id="filter" placeholder="Search categories" oninput="filterCategories(this.value)">
+      <button type="submit" {{ 'disabled' if not writable }}>Save selection</button>
+      <span id="count"></span>
+    </div>
+
+    {% for group_name, cats in groups %}
+    <div class="panel category-group">
+      <strong>{{ group_name }}</strong>
+      <table>
+        <tr><th style="width:2rem"></th><th>Category</th><th>Description</th><th>Source</th><th>Domains</th><th>Updated</th></tr>
+        {% for c in cats %}
+        <tr class="cat-row" data-text="{{ (c.name ~ ' ' ~ c.description ~ ' ' ~ group_name) | lower }}">
+          <td><input type="checkbox" name="cat" value="{{ c.name }}" id="cat-{{ c.name }}"
+                     {{ 'checked' if c.name in selected }} onchange="updateCount()"></td>
+          <td><label for="cat-{{ c.name }}"><strong>{{ c.name }}</strong></label></td>
+          <td>{{ c.description }}</td>
+          <td class="url">{{ c.sources | join(', ') }}</td>
+          <td>{{ c.domains if c.domains else '—' }}</td>
+          <td class="url">{{ c.updated | datetime if c.updated else ('not downloaded' if c.name in selected else '—') }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+    {% endfor %}
+
+    <button type="submit" {{ 'disabled' if not writable }}>Save selection</button>
+  </form>
+
+  <script>
+    function updateCount() {
+      var n = document.querySelectorAll('input[name=cat]:checked').length;
+      document.getElementById('count').textContent = n + ' selected';
+    }
+    function filterCategories(q) {
+      q = q.toLowerCase().trim();
+      document.querySelectorAll('.category-group').forEach(function (g) {
+        var any = false;
+        g.querySelectorAll('.cat-row').forEach(function (r) {
+          var show = !q || r.dataset.text.indexOf(q) !== -1;
+          r.style.display = show ? '' : 'none';
+          any = any || show;
+        });
+        g.style.display = any ? '' : 'none';
+      });
+    }
+    updateCount();
+  </script>
+{% endblock %}

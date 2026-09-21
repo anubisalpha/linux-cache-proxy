@@ -31,7 +31,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from cache_proxy import config
+from cache_proxy import categories, config
 from cache_proxy.contentfilter import build_index, parse_host_lines
 
 logger = logging.getLogger("cache_proxy.filterlists")
@@ -105,18 +105,19 @@ def _write_list(category: str, source: str, hosts: set) -> int:
     return new
 
 
-def _jobs(only_source: Optional[str], frequency: Optional[str] = None):
+def _jobs(only_source: Optional[str], frequency: Optional[str] = None, only_categories: Optional[list] = None):
     """(source name, category, url, kind, headers) for everything enforced.
     frequency="hourly" selects only sources marked refresh = "hourly"; None
     selects every source (what the daily run does)."""
-    enforced = set(config.FILTER_BLOCK_CATEGORIES)
+    enforced = set(config.block_categories())
+    if only_categories is not None:
+        enforced &= set(only_categories)
     for src in config.FILTER_SOURCES:
         if only_source and src["name"] != only_source:
             continue
         if frequency and src.get("refresh", "daily") != frequency:
             continue
-        cats = [c.lower() for c in (src.get("categories") or [src.get("category", "")])]
-        for cat in cats:
+        for cat in categories.source_categories(src):
             if cat in enforced:
                 yield src["name"], cat, src["url"].format(category=cat), src["type"], _auth_headers(src)
 
@@ -161,9 +162,10 @@ def _write_status(results: list) -> None:
     os.replace(tmp, config.FILTER_LISTS_DIR / STATUS_FILE)
 
 
-def update_all(only_source: Optional[str] = None, frequency: Optional[str] = None) -> list:
+def update_all(only_source: Optional[str] = None, frequency: Optional[str] = None,
+               only_categories: Optional[list] = None) -> list:
     results = []
-    for job in _jobs(only_source, frequency):
+    for job in _jobs(only_source, frequency, only_categories):
         r = update_source(*job)
         logger.info("%s/%s: %s", r["source"], r["category"], r["error"] or f"{r['count']} domains")
         results.append(r)

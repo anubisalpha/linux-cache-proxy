@@ -6,10 +6,13 @@ from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+import logging
+import os
+import threading
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
-from .. import analytics, config, filterlists, mailer, store, workers
+from .. import analytics, categories, config, filterlists, mailer, store, workers
 from .auth import require_auth
 
 app = FastAPI(title="Cache Proxy", dependencies=[Depends(require_auth)])
@@ -199,3 +202,110 @@ def blocks_test_email():
     except Exception as e:
         return RedirectResponse("/blocks?" + urlencode({"msg": f"Test email failed: {type(e).__name__}: {e}"}), status_code=303)
     return RedirectResponse("/blocks?" + urlencode({"msg": f"Test email sent to {config.UNBLOCK_RECIPIENT}", "ok": 1}), status_code=303)
+
+
+# ---- Categories --------------------------------------------------------------
+
+_download_lock = threading.Lock()
+
+
+def _categories_writable() -> bool:
+    path = config.CATEGORIES_FILE
+    return os.access(path, os.W_OK) if path.exists() else os.access(path.parent, os.W_OK)
+
+
+_in_flight: set = set()  # categories queued or downloading, guarded by _download_lock_state
+
+
+_download_lock_state = threading.Lock()
+
+
+def _download_in_background(names: list) -> list:
+    """Fetch the lists for newly enabled categories without holding up the
+    request. One download at a time; the proxy loads each list as it lands.
+    Categories already queued or downloading are skipped, so saving twice in
+    a row doesn't fetch the same 18 MB again. Returns the ones actually queued."""
+    with _download_lock_state:
+        names = [n for n in names if n not in _in_flight]
+        _in_flight.update(names)
+    if not names:
+        return []
+
+    def run():
+        with _download_lock:
+            try:
+                filterlists.update_all(only_categories=names)
+            except Exception:
+                logging.getLogger("cache_proxy.webui").exception("category list download failed")
+            finally:
+                with _download_lock_state:
+                    _in_flight.difference_update(names)
+    threading.Thread(target=run, daemon=True).start()
+    return names
+
+
+def _list_status_by_category() -> dict:
+    """category -> (domains across its sources, latest successful update)"""
+    out: dict = {}
+    for key, v in filterlists.read_status().items():
+        cat = key.rsplit("/", 1)[-1]
+        if v.get("ts"):
+            domains, ts = out.get(cat, (0, 0))
+            out[cat] = (domains + (v.get("count") or 0), max(ts, v["ts"]))
+    return out
+
+
+@app.get("/categories", response_class=HTMLResponse)
+def categories_page(request: Request, msg: str = Query(default=""), ok: int = Query(default=0)):
+    selected = config.block_categories()
+    downloaded = _list_status_by_category()
+    available = categories.available()
+    for c in available:
+        c["domains"], c["updated"] = downloaded.get(c["name"], (0, None))
+    return templates.TemplateResponse(
+        request,
+        "categories.html",
+        {
+            "groups": categories.group(available),
+            "selected": set(selected),
+            "total": len(available),
+            "categories_file": config.CATEGORIES_FILE,
+            "writable": _categories_writable(),
+            "filtering_enabled": config.FILTERING_ENABLED,
+            "msg": msg,
+            "ok": bool(ok),
+            "active": "categories",
+        },
+    )
+
+
+def _redirect_categories(msg: str, ok: bool = False) -> RedirectResponse:
+    return RedirectResponse("/categories?" + urlencode({"msg": msg, "ok": int(ok)}), status_code=303)
+
+
+@app.post("/categories")
+async def categories_save(request: Request):
+    # The admin login is HTTP Basic, which browsers resend automatically, so
+    # refuse a form posted from another site.
+    origin = request.headers.get("origin")
+    if origin and urlsplit(origin).netloc != request.headers.get("host", ""):
+        return JSONResponse({"detail": "cross-site request refused"}, status_code=403)
+    form = await request.form()
+    valid = [c["name"] for c in categories.available()]
+    chosen = set(form.getlist("cat"))
+    selected = [name for name in valid if name in chosen]  # catalogue order; unknown names ignored
+    if not _categories_writable():
+        return _redirect_categories(f"{config.CATEGORIES_FILE} is not writable by this service; nothing was saved.")
+    try:
+        categories.save_selected(selected)
+    except OSError as e:
+        return _redirect_categories(f"Could not save: {e}")
+    downloaded = _list_status_by_category()
+    missing = [c for c in selected if c not in downloaded]
+    queued = _download_in_background(missing) if missing else []
+    msg = f"Saved: {len(selected)} categories enforced."
+    if queued:
+        msg += f" Downloading lists for: {', '.join(queued)} (a few seconds to a minute; refresh to see progress)."
+    if len(queued) < len(missing):
+        msg += " Other lists are already downloading."
+    return _redirect_categories(msg, ok=True)

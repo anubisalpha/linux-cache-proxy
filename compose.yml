@@ -39,6 +39,20 @@ services:
       timeout: 3s
       retries: 5
 
+  # The page blocked users are sent to. Demo only: listens on 8000 in the
+  # container (the package uses port 80) and is published on host port 8081.
+  cache-blockpage:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["/bin/bash", "run_blockpage.sh"]
+    environment:
+      CACHE_PROXY_BLOCKPAGE_PORT: "8000"
+    ports:
+      - "8081:8000"
+    volumes:
+      - cache-data:/var/lib/cache-proxy
+
   # `docker compose run --rm test` runs the full pytest suite (both venvs)
   # against an ephemeral cache dir, not the persistent cache-data volume.
   test:
@@ -50,7 +64,7 @@ services:
     command:
       - >
         /opt/cache-proxy/venv-proxy/bin/pytest tests/test_store.py tests/test_config.py tests/test_addon_unit.py tests/test_addon_integration.py tests/test_ttl.py tests/test_analytics.py tests/test_supervisor.py tests/test_pool_integration.py tests/test_coalesce.py tests/test_contentfilter.py tests/test_filterlists.py -v &&
-        /opt/cache-proxy/venv-webui/bin/pytest tests/test_store.py tests/test_config.py tests/test_auth.py tests/test_webui.py tests/test_blockpage.py -v
+        /opt/cache-proxy/venv-webui/bin/pytest tests/test_store.py tests/test_config.py tests/test_auth.py tests/test_webui.py tests/test_blockpage.py tests/test_categories.py -v
     environment:
       CACHE_PROXY_DIR: /tmp/test-cache/files
       CACHE_PROXY_DB: /tmp/test-cache/index.db

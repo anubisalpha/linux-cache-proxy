@@ -5,3 +5,4 @@
 /etc/cache-proxy/allowed-hosts.conf
 /etc/cache-proxy/blocked-url-patterns.conf
 /etc/cache-proxy/secrets.env
+/etc/cache-proxy/filter-categories.conf

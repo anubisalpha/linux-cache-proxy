@@ -1,0 +1,18 @@
+{# Shared page header: title and the admin menu. Included by base.html, so
+   every admin page gets it. Add a menu item by adding a row to `menu`. `active`
+   is set by each page's route. #}
+{% set menu = [
+  ("files", "/", "Cached Files"),
+  ("usage", "/usage", "Usage"),
+  ("stats", "/stats", "Stats"),
+  ("blocks", "/blocks", "Blocked"),
+  ("categories", "/categories", "Categories"),
+] %}
+<header>
+  <h1>Cache Proxy</h1>
+  <nav>
+    {% for key, href, label in menu %}
+    <a href="{{ href }}" class="{{ 'active' if active == key }}">{{ label }}</a>
+    {% endfor %}
+  </nav>
+</header>

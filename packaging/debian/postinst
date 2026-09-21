@@ -43,6 +43,10 @@ chmod 644 /etc/cache-proxy/never-cache-hosts.conf /etc/cache-proxy/never-interce
 chown root:"$GROUP" /etc/cache-proxy/blocked-hosts.conf /etc/cache-proxy/allowed-hosts.conf /etc/cache-proxy/blocked-url-patterns.conf
 chmod 644 /etc/cache-proxy/blocked-hosts.conf /etc/cache-proxy/allowed-hosts.conf /etc/cache-proxy/blocked-url-patterns.conf
 
+# The web UI (cacheproxy user) rewrites this one file from its Categories page.
+chown root:"$GROUP" /etc/cache-proxy/filter-categories.conf
+chmod 664 /etc/cache-proxy/filter-categories.conf
+
 # Secrets (SMTP password, URLhaus key): root + service group only.
 chown root:"$GROUP" /etc/cache-proxy/secrets.env
 chmod 640 /etc/cache-proxy/secrets.env

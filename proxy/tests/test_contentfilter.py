@@ -101,6 +101,21 @@ def test_index_lookup_is_exact_and_handles_empty_and_corrupt_files(tmp_path):
     assert f.check("d5.example", "http://d5.example/")  # still works; the bad file is skipped
 
 
+def test_filter_follows_the_saved_category_selection_without_a_restart(tmp_path, monkeypatch):
+    cats = tmp_path / "cats.conf"
+    cats.write_text("adult\n")
+    monkeypatch.setattr(config, "CATEGORIES_FILE", cats)
+    for name in ("adult/ut1", "gambling/ut1"):
+        _write_list(tmp_path / "lists" / f"{name}.idx", f"{name.split('/')[0]}.example\n")
+    f = contentfilter.ContentFilter(tmp_path / "b", tmp_path / "a", tmp_path / "p", tmp_path / "lists")
+    assert f.check("adult.example", "http://adult.example/") and f.check("gambling.example", "http://gambling.example/") is None
+    cats.write_text("gambling\n")  # same size, possibly same mtime: must still be noticed
+    assert f.reload_if_changed()
+    assert f.check("adult.example", "http://adult.example/") is None and f.check("gambling.example", "http://gambling.example/")
+    cats.write_text("")
+    assert f.reload_if_changed() and f.check("gambling.example", "http://gambling.example/") is None
+
+
 def test_inline_block_page_escapes_html():
     assert b"<script>" not in contentfilter.block_page("<script>x</script>", "<b>h</b>", "<i>r</i>")
 
@@ -116,6 +131,7 @@ def blocking_addon(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ALLOWED_HOSTS_FILE", tmp_path / "a")
     monkeypatch.setattr(config, "BLOCKED_URL_PATTERNS_FILE", tmp_path / "p")
     monkeypatch.setattr(config, "FILTER_LISTS_DIR", tmp_path / "lists")
+    monkeypatch.setattr(config, "CATEGORIES_FILE", tmp_path / "no-such-categories.conf")
     monkeypatch.setattr(config, "FILTER_BLOCK_CATEGORIES", ["adult"])
     monkeypatch.setattr(config, "BLOCKPAGE_URL", "")
     (tmp_path / "b").write_text("bad.com\n")

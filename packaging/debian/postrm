@@ -2,7 +2,8 @@
 set -e
 
 if [ "$1" = "remove" ]; then
-  systemctl disable cache-proxy.service cache-webui.service 2>/dev/null || true
+  systemctl disable cache-proxy.service cache-webui.service cache-blockpage.service \
+    cache-proxy-lists.timer cache-proxy-lists-hourly.timer 2>/dev/null || true
   systemctl daemon-reload || true
   # Backstop: __pycache__ dirs created at runtime aren't dpkg-tracked, so
   # they can block dpkg from removing an otherwise-empty package
@@ -13,7 +14,8 @@ if [ "$1" = "remove" ]; then
 fi
 
 if [ "$1" = "purge" ]; then
-  systemctl disable cache-proxy.service cache-webui.service 2>/dev/null || true
+  systemctl disable cache-proxy.service cache-webui.service cache-blockpage.service \
+    cache-proxy-lists.timer cache-proxy-lists-hourly.timer 2>/dev/null || true
   systemctl daemon-reload || true
   # Conffiles (config.toml, host lists) are removed by dpkg itself on
   # purge. Everything else -- cached files, the SQLite index, the

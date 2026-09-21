@@ -28,6 +28,9 @@ BLOCKED_HOSTS_FILE = Path(
 ALLOWED_HOSTS_FILE = Path(
     os.environ.get("CACHE_PROXY_ALLOWED_HOSTS_FILE", CONFIG_PATH.parent / "allowed-hosts.conf")
 )
+CATEGORIES_FILE = Path(
+    os.environ.get("CACHE_PROXY_CATEGORIES_FILE", CONFIG_PATH.parent / "filter-categories.conf")
+)
 BLOCKED_URL_PATTERNS_FILE = Path(
     os.environ.get("CACHE_PROXY_BLOCKED_URL_PATTERNS_FILE", CONFIG_PATH.parent / "blocked-url-patterns.conf")
 )
@@ -112,7 +115,8 @@ _DEFAULTS = {
                 "name": "ut1",
                 "type": "ut1",
                 "url": "https://dsi.ut-capitole.fr/blacklists/download/{category}.tar.gz",
-                "categories": ["adult", "gambling", "phishing"],
+                # No "categories" key: offers every UT1 category, and only the
+                # ones you enable (Categories page) are downloaded.
             },
             {
                 # Their malware tarball currently contains the phishing list,
@@ -231,7 +235,29 @@ CACHEABLE_CONTENT_TYPES = set(_cfg["cache"]["content_types"])
 
 FILTERING_ENABLED = os.environ.get("CACHE_PROXY_FILTERING", str(_cfg["filtering"]["enabled"])).lower() in ("1", "true", "yes")
 FILTER_LISTS_DIR = Path(os.environ.get("CACHE_PROXY_LISTS_DIR", _cfg["filtering"]["lists_dir"]))
-FILTER_BLOCK_CATEGORIES = [c.lower() for c in _cfg["filtering"]["block_categories"]]
+FILTER_BLOCK_CATEGORIES = [c.lower() for c in _cfg["filtering"]["block_categories"]]  # default; see block_categories()
+
+
+def parse_categories_text(text: str) -> list:
+    """Category names from a filter-categories.conf body (one per line, "#"
+    comments), lower-cased, de-duplicated, invalid names dropped."""
+    out = []
+    for line in text.splitlines():
+        name = line.split("#", 1)[0].strip().lower()
+        if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", name) and name not in out:
+            out.append(name)
+    return out
+
+
+def block_categories() -> list:
+    """The categories to enforce right now. The web UI's Categories page
+    writes filter-categories.conf; if that file exists it decides (an empty
+    one means none), otherwise the default in config.toml applies. Read on
+    every call so a saved change needs no restart."""
+    try:
+        return parse_categories_text(CATEGORIES_FILE.read_text(encoding="utf-8"))
+    except OSError:
+        return list(FILTER_BLOCK_CATEGORIES)
 FILTER_SOURCES = list(_cfg["filtering"]["sources"])
 
 BLOCKPAGE_URL = os.environ.get("CACHE_PROXY_BLOCKPAGE_URL", _cfg["blockpage"]["url"]).rstrip("/")
