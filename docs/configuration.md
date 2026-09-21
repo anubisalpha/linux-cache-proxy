@@ -214,6 +214,178 @@ though the proxy CA is installed on the client.
 
 ---
 
+## Content filtering (`[filtering]`, `[blockpage]`, `[email]`)
+
+Off by default. It blocks requests to sites in downloaded **category lists**
+(adult, gambling, malware, phishing, ...) and to hosts and URLs you list
+yourself, shows the user a block page, records every block in a database
+table, and lets the user ask for an unblock by email.
+
+### What is filtered
+
+Only traffic the proxy decrypts. Hosts in `never-intercept-hosts.conf` are
+tunnelled raw and are **not** filtered, so keep blocked hosts out of that
+list. Clients that bypass the proxy (VPN, direct connection, browsers set to
+"no proxy", DNS-over-HTTPS with a direct route) are not filtered either. It
+is a host/URL filter driven by lists: there is no inspection of page content.
+
+The check runs before the cache is consulted, so a blocked URL is never
+served from the cache or written to it. Precedence: **allow-list > blocked
+hosts > category lists > URL patterns**.
+
+### `[filtering]`
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Master switch. Restart `cache-proxy` after changing it. |
+| `lists_dir` | `/var/lib/cache-proxy/filter-lists` | Where downloaded lists are kept, deliberately outside `/etc`. |
+| `block_categories` | adult, gambling, malware, phishing | Categories that are enforced. Only these are downloaded. |
+| `[[filtering.sources]]` | UT1, UT1 malware mirror, Phishing.Database, URLhaus | Where lists come from (below). Listing sources in `config.toml` **replaces** the built-in set. |
+
+Each source has a `name`, a `type` and a `url`, plus `category` (or
+`categories` for a per-category tarball, where `{category}` in the URL is
+filled in). Types: `ut1` (a UT1 category tarball), `domains` (one domain per
+line), `hosts` (hosts-file lines such as `0.0.0.0 bad.example`).
+`auth_key_env` names an environment variable, set in `secrets.env`, that is
+sent as an `Auth-Key` header.
+
+| Source | Category | Licence / terms (check before relying on it) |
+|---|---|---|
+| [UT1, Université Toulouse Capitole](https://dsi.ut-capitole.fr/blacklists/index_en.php) | adult, gambling, phishing, and malware via its GitHub mirror | CC BY-SA 4.0 per the licence file in their repository |
+| [Phishing.Database](https://github.com/mitchellkrogza/Phishing.Database) | phishing | MIT |
+| [URLhaus (abuse.ch)](https://urlhaus.abuse.ch/api/) | malware | Free under fair use; their API page says downloads need an `Auth-Key` (free) and points commercial users to a paid API. In testing the host file downloaded without one, but set `CACHE_PROXY_URLHAUS_KEY` in `secrets.env` to be safe. |
+
+UT1 has many more categories (`bank`, `chat`, `dating`, `social_networks`,
+`vpn`, `warez`, and so on). Add a name to `block_categories` and to the
+UT1 source's `categories` to use one.
+
+**Refreshing.** Two timers keep the lists current:
+
+| Timer | When | What it fetches |
+|---|---|---|
+| `cache-proxy-lists.timer` | daily (with up to an hour of random delay) | every source |
+| `cache-proxy-lists-hourly.timer` | every hour, 08:00 to 18:00, Monday to Friday (machine local time) | only sources marked `refresh = "hourly"`: URLhaus and Phishing.Database by default, since new malware and phishing domains appear all day |
+
+UT1 changes far less often and its lists are large, so it stays on the daily
+run. Mark any source `refresh = "hourly"` in `config.toml` to include it in
+the hourly run. To change the hours, run
+`sudo systemctl edit cache-proxy-lists-hourly.timer` and override
+`OnCalendar=` (first add an empty `OnCalendar=` line to clear the default).
+The hourly run fetches URLhaus about 55 times a week, which should be well
+within their fair-use terms, but that is their policy to state; check it.
+
+Run it by hand after install, or any time:
+
+```bash
+sudo -u cacheproxy /opt/cache-proxy/venv-proxy/bin/python3 -m cache_proxy.filterlists update
+sudo -u cacheproxy /opt/cache-proxy/venv-proxy/bin/python3 -m cache_proxy.filterlists status
+```
+
+A refresh never makes things worse. Each list is downloaded, checked and then
+swapped in atomically. An empty download, one under half the size of the list
+it replaces, or a UT1 tarball that does not hold the expected category, is
+rejected: yesterday's list stays in use and the error is shown on the web UI
+**Blocked** page and in `status`. The proxy picks up new lists within about 10
+seconds, with no restart.
+
+**Size and memory.** The default lists are about 5.5 million domains. Each is
+stored as a readable `<source>.txt` (grep it to see whether a domain is
+listed; roughly 180 MB in total) and a compact `<source>.idx` hash index
+(about 45 MB) that every proxy worker memory-maps. Measured on the full
+default lists: loading takes well under a second and adds almost no memory per
+worker, and a lookup takes roughly 45 microseconds.
+
+### Your own lists (in `/etc/cache-proxy/`)
+
+All three re-read automatically within about 10 seconds of being saved.
+
+| File | Effect |
+|---|---|
+| `blocked-hosts.conf` | Extra hosts (and subdomains) to block. Hosts-file lines and bare IP addresses are accepted. |
+| `allowed-hosts.conf` | Hosts (and subdomains) that are **never** blocked. Beats everything else. **This is where an approved unblock request goes.** |
+| `blocked-url-patterns.conf` | Python regexes, case-insensitive, searched in the full URL. Bad lines are skipped with a log warning. |
+
+### `[blockpage]`
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `url` | empty | How clients reach the block page, e.g. `http://cache-proxy.example.lan`. Empty means no redirect: blocked requests just get an inline 403 page. |
+| `port` | `80` | Port the block-page service (`cache-blockpage.service`) listens on. |
+| `message` | generic text | Shown at the top of the block page. |
+| `max_requests_per_ip_per_hour` | `5` | Unblock requests one client IP may send per hour. |
+
+**What the user sees.** A blocked *page load* (the browser sends
+`Sec-Fetch-Dest: document`) is redirected to `<url>/blocked?t=<token>`. That
+page shows the reason (or category), the site and full URL, the user's IP
+address, the date and time, and their browser string. Every other blocked
+request (images, scripts, API calls, `apt`, `curl`, older browsers) gets a
+plain `403` with no redirect, because a redirect to an HTML page is
+meaningless to them. All block responses carry `X-Cache-Proxy: BLOCKED`.
+
+The page is served on plain HTTP so it loads without a certificate warning,
+and contains only the viewer's own block details. Opening `/` or `/blocked`
+directly, or with a wrong token, shows an empty template with no details and
+**no form**. The full page needs a token from a real block that was recorded
+for the viewer's own IP address. The token is 128 random bits.
+
+**Unblock request.** The full page has a form (with an optional note) that
+emails the administrator. The email is built from the stored database row, not
+from anything the browser sends, so it cannot be forged. Each block allows one
+request, a failed send lets the user retry, and requests are rate limited per
+IP. It needs `[email]` configured; without it the form is not shown.
+
+The block-page host must be reachable by clients. Requests for it come
+through the proxy, which sends them straight to the block-page service on
+this machine and tells it the real client IP (a client-supplied
+`X-Client-IP` is replaced, and the service only believes that header from
+loopback).
+
+### `[email]`
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `smtp_host`, `smtp_port` | empty, `587` | Your mail server |
+| `security` | `starttls` | `starttls`, `ssl` or `none` |
+| `username` | empty | SMTP login, if the server needs one |
+| `from_address` | empty | Sender address |
+| `unblock_recipient` | empty | Where unblock requests go |
+
+The SMTP **password is not in `config.toml`**: set
+`CACHE_PROXY_SMTP_PASSWORD=...` in `/etc/cache-proxy/secrets.env` (readable
+only by root and the service group). To test:
+
+```bash
+sudo -u cacheproxy env $(sudo cat /etc/cache-proxy/secrets.env | grep -v '^#' | xargs) \
+  /opt/cache-proxy/venv-proxy/bin/python3 -m cache_proxy.mailer --test
+```
+
+or use **Send test email** on the web UI **Blocked** page, which also says
+which settings are still missing.
+
+### Approving an unblock request
+
+The email, and the web UI **Blocked** page, both say exactly what to do. Add
+the site's host on its own line to `/etc/cache-proxy/allowed-hosts.conf`:
+
+```
+shop.example.com
+```
+
+It covers subdomains, overrides every block rule, and takes effect within
+about 10 seconds. There is no button and no restart. To decline, do nothing.
+
+### The `blocked` table
+
+Every block is recorded in the `blocked` table of `index.db`: time, client IP,
+host, full URL (truncated at 2048 characters), kind (`category`, `host` or
+`url`), category, source list, reason, browser string, and whether and when an
+unblock was requested. **It is never pruned**, unlike the usage log. Page
+loads are written at once; other blocked requests are batched and written
+within about 10 seconds. The web UI **Blocked** page lists the latest 500,
+optionally only those with an unblock request.
+
+---
+
 ## Settings that are not in `config.toml`
 
 **The proxy's listening port (8080)** is set by the systemd unit, not the

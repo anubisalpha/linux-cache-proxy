@@ -170,6 +170,8 @@ Preferences → Control Panel Settings → Internet Settings) or WPAD:
 | `config.toml` | Cache dir/db paths, size limits, TTLs and quota, cacheable extensions/content-types, `[webcache]` asset rules, `[proxy]` worker-pool sizing, `[analytics]` thresholds/retention, web UI port/username/password_hash/TLS cert paths |
 | `never-cache-hosts.conf` | Hosts (+ subdomains) proxied normally but never written to the cache |
 | `never-intercept-hosts.conf` | Hosts (+ subdomains) that bypass TLS interception entirely — mitmproxy tunnels them raw. Use for cert-pinned apps and anything sensitive (banking, etc). Implies never-cache for the same host |
+| `blocked-hosts.conf` / `allowed-hosts.conf` / `blocked-url-patterns.conf` | Content filtering overrides (off until `[filtering] enabled = true`): extra hosts to block, hosts never blocked (where approved unblock requests go), URL regexes. Downloaded category lists live separately in `/var/lib/cache-proxy/filter-lists`. Re-read automatically |
+| `secrets.env` | SMTP password and URLhaus key, kept out of `config.toml` (root and service group only) |
 
 Both host-list files are one pattern per line, `#` comments, `*.` prefix
 optional (`example.com` already matches subdomains). Config changes need

@@ -181,9 +181,9 @@ downloaded through the proxy.
 | Path | Contents |
 |---|---|
 | `/opt/cache-proxy/` | The application code, the launch scripts and the two bundled Python environments (`venv-proxy`, `venv-webui`). Replaced on every upgrade; don't edit. |
-| `/etc/cache-proxy/` | `config.toml`, the two host lists, and the web UI certificate and key. These are your settings and survive upgrades. |
-| `/etc/systemd/system/` | `cache-proxy.service` and `cache-webui.service`. |
-| `/var/lib/cache-proxy/` | All data: `files/` (the cache), `index.db` (index and usage log), `mitmproxy-ca/` (the certificate authority) and `workers.json` (live status). |
+| `/etc/cache-proxy/` | `config.toml`, the host lists, `secrets.env`, and the web UI certificate and key. These are your settings and survive upgrades. |
+| `/etc/systemd/system/` | `cache-proxy.service`, `cache-webui.service`, `cache-blockpage.service` and the `cache-proxy-lists` service and timer. |
+| `/var/lib/cache-proxy/` | All data: `files/` (the cache), `index.db` (index, usage log and the `blocked` table), `filter-lists/` (downloaded block lists), `mitmproxy-ca/` (the certificate authority) and `workers.json` (live status). |
 | `/usr/share/doc/cache-proxy/` | A copy of the README. |
 
 `apt remove` stops and disables the services and leaves settings and data.

@@ -102,6 +102,78 @@ min_history_hours = 6
 lookback_hours = 168
 retention_days = 90
 
+# Content filtering. Off until enabled = true (then restart cache-proxy).
+# Category lists are downloaded daily into /var/lib/cache-proxy/filter-lists
+# (separate from /etc) by the cache-proxy-lists timer; only the categories
+# named in block_categories are downloaded and enforced. Hosts in
+# never-intercept-hosts.conf are tunnelled raw and cannot be filtered.
+# Hand-edited overrides in /etc/cache-proxy/: blocked-hosts.conf,
+# allowed-hosts.conf, blocked-url-patterns.conf (re-read within ~10s).
+[filtering]
+enabled = false
+lists_dir = "/var/lib/cache-proxy/filter-lists"
+block_categories = ["adult", "gambling", "malware", "phishing"]
+
+# Where the lists come from. type: "ut1" (per-category tarball, {category} is
+# filled in), "domains" (one domain per line) or "hosts" (hosts-file lines).
+# Listing sources here REPLACES the built-in set, so keep the ones you want.
+# refresh = "hourly" sources are also fetched every hour, 08:00-18:00 Monday
+# to Friday, by cache-proxy-lists-hourly.timer (fast-moving threat feeds);
+# every source is fetched daily regardless. Change the hours with
+# "systemctl edit cache-proxy-lists-hourly.timer".
+# auth_key_env names an environment variable (set in secrets.env) sent as an
+# Auth-Key header.
+[[filtering.sources]]
+name = "ut1"          # Universite Toulouse Capitole, CC BY-SA 4.0
+type = "ut1"
+url = "https://dsi.ut-capitole.fr/blacklists/download/{category}.tar.gz"
+categories = ["adult", "gambling", "phishing"]
+
+[[filtering.sources]]
+# UT1's own malware tarball currently contains the phishing list, so this
+# category comes from their GitHub mirror instead.
+name = "ut1-malware"
+type = "domains"
+url = "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/malware/domains"
+category = "malware"
+
+[[filtering.sources]]
+name = "phishing-database"   # MIT
+type = "domains"
+url = "https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database/master/phishing-domains-ACTIVE.txt"
+category = "phishing"
+refresh = "hourly"
+
+[[filtering.sources]]
+name = "urlhaus"     # abuse.ch; free fair-use, see their terms
+type = "hosts"
+url = "https://urlhaus.abuse.ch/downloads/hostfile/"
+category = "malware"
+auth_key_env = "CACHE_PROXY_URLHAUS_KEY"
+refresh = "hourly"
+
+# The page blocked users are sent to. url must be how clients reach this
+# machine (hostname or IP, no port for 80), e.g. "http://cache-proxy.example.lan".
+# Empty = no redirect: blocked requests just get an inline 403 page.
+[blockpage]
+url = ""
+port = 80
+message = "This site is blocked by your organisation's web policy."
+# Unblock requests one client IP may send per hour.
+max_requests_per_ip_per_hour = 5
+
+# Outgoing mail for unblock requests. Put the password in
+# /etc/cache-proxy/secrets.env as CACHE_PROXY_SMTP_PASSWORD, not here.
+# Test it:  sudo -u cacheproxy /opt/cache-proxy/venv-proxy/bin/python3 -m cache_proxy.mailer --test
+# (or use the "Send test email" button on the web UI Blocked page).
+[email]
+smtp_host = ""
+smtp_port = 587
+security = "starttls"      # starttls | ssl | none
+username = ""
+from_address = ""
+unblock_recipient = ""
+
 [webui]
 port = 443
 

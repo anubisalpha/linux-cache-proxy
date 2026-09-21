@@ -1,0 +1,13 @@
+[Unit]
+Description=Hourly block-list refresh, 08:00-18:00 Monday to Friday
+
+[Timer]
+# Local time of this machine: 08:00, 09:00 ... 18:00 on weekdays.
+OnCalendar=Mon..Fri *-*-* 08..18:00:00
+RandomizedDelaySec=120
+# No catch-up: a missed hourly run outside working hours is pointless, and
+# the daily run covers everything.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

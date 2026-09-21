@@ -7,8 +7,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.templating import Jinja2Templates
 
 import time
+from urllib.parse import urlencode
 
-from .. import analytics, config, store, workers
+from .. import analytics, config, filterlists, mailer, store, workers
 from .auth import require_auth
 
 app = FastAPI(title="Cache Proxy", dependencies=[Depends(require_auth)])
@@ -159,3 +160,42 @@ def download(url_hash: str):
         filename=entry["filename"],
         media_type=entry["content_type"] or "application/octet-stream",
     )
+
+
+@app.get("/blocks", response_class=HTMLResponse)
+def blocks(request: Request, requested: int = Query(default=0), msg: str = Query(default=""), ok: int = Query(default=0)):
+    rows = [
+        {**dict(r), "allow_line": r["host"]}
+        for r in store.list_blocked(limit=500, requested_only=bool(requested))
+    ]
+    now = time.time()
+    return templates.TemplateResponse(
+        request,
+        "blocks.html",
+        {
+            "rows": rows,
+            "requested": bool(requested),
+            "msg": msg,
+            "ok": bool(ok),
+            "filtering_enabled": config.FILTERING_ENABLED,
+            "categories": config.FILTER_BLOCK_CATEGORIES,
+            "list_status": sorted(filterlists.read_status().items()),
+            "allowed_file": config.ALLOWED_HOSTS_FILE,
+            "email_missing": mailer.missing_settings(),
+            "recipient": config.UNBLOCK_RECIPIENT,
+            "now": now,
+            "active": "blocks",
+        },
+    )
+
+
+@app.post("/blocks/test-email")
+def blocks_test_email():
+    missing = mailer.missing_settings()
+    if missing:
+        return RedirectResponse("/blocks?" + urlencode({"msg": "Email not configured: set " + ", ".join(missing) + " in [email]"}), status_code=303)
+    try:
+        mailer.send_test()
+    except Exception as e:
+        return RedirectResponse("/blocks?" + urlencode({"msg": f"Test email failed: {type(e).__name__}: {e}"}), status_code=303)
+    return RedirectResponse("/blocks?" + urlencode({"msg": f"Test email sent to {config.UNBLOCK_RECIPIENT}", "ok": 1}), status_code=303)

@@ -40,18 +40,27 @@ chown root:"$GROUP" /etc/cache-proxy/config.toml
 chmod 640 /etc/cache-proxy/config.toml
 chown root:"$GROUP" /etc/cache-proxy/never-cache-hosts.conf /etc/cache-proxy/never-intercept-hosts.conf
 chmod 644 /etc/cache-proxy/never-cache-hosts.conf /etc/cache-proxy/never-intercept-hosts.conf
+chown root:"$GROUP" /etc/cache-proxy/blocked-hosts.conf /etc/cache-proxy/allowed-hosts.conf /etc/cache-proxy/blocked-url-patterns.conf
+chmod 644 /etc/cache-proxy/blocked-hosts.conf /etc/cache-proxy/allowed-hosts.conf /etc/cache-proxy/blocked-url-patterns.conf
+
+# Secrets (SMTP password, URLhaus key): root + service group only.
+chown root:"$GROUP" /etc/cache-proxy/secrets.env
+chmod 640 /etc/cache-proxy/secrets.env
+
+mkdir -p /var/lib/cache-proxy/filter-lists
+chown "$USER:$GROUP" /var/lib/cache-proxy/filter-lists
 
 systemctl daemon-reload || true
 
 if [ -n "$2" ]; then
   # Upgrade: restart anything already running so new code takes effect.
   # Config (a conffile) is preserved by dpkg, not touched here.
-  systemctl try-restart cache-proxy.service cache-webui.service || true
+  systemctl try-restart cache-proxy.service cache-webui.service cache-blockpage.service || true
 else
   # Fresh install: enable for boot, but do not auto-start -- this
   # intercepts all HTTPS traffic and the web UI has no password set yet.
   # Review config.toml and set a password before starting it.
-  systemctl enable cache-proxy.service cache-webui.service || true
+  systemctl enable cache-proxy.service cache-webui.service cache-blockpage.service cache-proxy-lists.timer cache-proxy-lists-hourly.timer || true
   cat <<'EOF'
 
 cache-proxy installed but not started.
@@ -66,7 +75,13 @@ Before starting it:
   3. Deploy the mitmproxy CA cert to clients (see README.md) --
      it's generated on first start of cache-proxy.service.
 
-Then:  sudo systemctl start cache-proxy cache-webui
+Optional content filtering (see docs/configuration.md, [filtering]):
+  - set [blockpage] url and [email] in config.toml, secrets in /etc/cache-proxy/secrets.env
+  - download the lists now:
+       sudo -u cacheproxy /opt/cache-proxy/venv-proxy/bin/python3 -m cache_proxy.filterlists update
+  - set [filtering] enabled = true
+
+Then:  sudo systemctl start cache-proxy cache-webui cache-blockpage cache-proxy-lists.timer cache-proxy-lists-hourly.timer
 EOF
 fi
 

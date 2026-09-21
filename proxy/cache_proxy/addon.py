@@ -21,6 +21,7 @@ import secrets
 import sys
 import time
 from typing import Optional
+from urllib.parse import urlsplit
 
 from mitmproxy import http
 
@@ -28,7 +29,7 @@ from mitmproxy import http
 # cache_proxy package), so relative imports don't work here. Make the
 # proxy/ directory importable and import cache_proxy absolutely instead.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from cache_proxy import config, store  # noqa: E402
+from cache_proxy import config, contentfilter, store  # noqa: E402
 
 logger = logging.getLogger("cache_proxy")
 
@@ -164,6 +165,9 @@ class CacheAddon:
         self._asset_hits: dict = {}  # url_hash -> hits not yet written to the DB
         # flow.id -> (lock fd, taken at): fetches this worker is leading.
         self._leading: dict = {}
+        self._filter = contentfilter.ContentFilter() if config.FILTERING_ENABLED else None
+        self._pending_blocks: list = []  # subresource blocks, written in batches
+        self._blockpage_host = urlsplit(config.BLOCKPAGE_URL).hostname if config.BLOCKPAGE_URL else None
         self._token = secrets.token_hex(16)
         self._server = LocalFileServer(self._token)
 
@@ -187,12 +191,15 @@ class CacheAddon:
                 # Other workers add (and the supervisor purges) entries; pick
                 # that up. Off the event loop so a slow query can't stall traffic.
                 self._known_hashes = await loop.run_in_executor(None, store.known_hashes)
+                if self._filter:
+                    await loop.run_in_executor(None, self._filter.reload_if_changed)
                 counters, asset_hits = self._take_stats()
                 try:
                     await loop.run_in_executor(None, self._write_stats, counters, asset_hits)
                 except Exception:
                     self._restore_stats(counters, asset_hits)
                     raise
+                await loop.run_in_executor(None, self._flush_blocks)
                 # Safety net: never let a leader that somehow missed every
                 # release hook keep a URL locked past the waiters' patience.
                 stale = time.monotonic() - max(2 * config.COALESCE_WAIT, 300)
@@ -229,6 +236,21 @@ class CacheAddon:
         except Exception:
             self._restore_stats(counters, asset_hits)
             raise
+
+    def _flush_blocks(self) -> None:
+        pending, self._pending_blocks = self._pending_blocks, []
+        try:
+            store.record_blocks(pending)
+        except Exception:
+            self._pending_blocks = pending + self._pending_blocks
+            raise
+
+    def done(self):
+        try:
+            self._flush_stats()
+            self._flush_blocks()
+        except Exception as e:
+            logger.warning("final flush failed: %s", e)
 
     def _count(self, name: str, n: int = 1) -> None:
         self._counters[name] = self._counters.get(name, 0) + n
@@ -269,7 +291,66 @@ class CacheAddon:
         if held:
             store.release_lock(held[0])
 
+    def _to_block_page(self, flow: http.HTTPFlow) -> bool:
+        """Requests for the block page itself are sent to the block page
+        service on this machine's loopback (so it can't loop back through the
+        proxy or depend on DNS), tagged with the real client IP, and exempted
+        from filtering and caching. Returns True if this was one."""
+        req = flow.request
+        if not self._blockpage_host or req.host.lower() != self._blockpage_host:
+            return False
+        req.headers["X-Client-IP"] = _client_ip(flow)  # replaces anything the client sent
+        req.host = "127.0.0.1"
+        req.port = config.BLOCKPAGE_PORT
+        req.scheme = "http"
+        return True
+
+    def _blocked(self, flow: http.HTTPFlow) -> bool:
+        """Answer a blocked request instead of forwarding it. Runs before
+        cache lookup and coalescing, so blocked URLs never touch the cache or
+        the upstream server.
+
+        A page load (Sec-Fetch-Dest: document) is redirected to the block
+        page, keyed by a fresh token so the page can show exactly this block.
+        Everything else (images, scripts, API calls, apt, curl) gets a plain
+        403 -- a redirect to an HTML page would be meaningless to them."""
+        if not self._filter:
+            return False
+        req = flow.request
+        verdict = self._filter.check(req.host, req.pretty_url)
+        if not verdict:
+            return False
+        ip = _client_ip(flow)
+        row = {
+            "token": store.new_block_token(), "ts": time.time(), "client_ip": ip,
+            "host": req.host, "url": req.pretty_url[:2048], "kind": verdict.kind,
+            "category": verdict.category, "source": verdict.source, "reason": verdict.reason,
+            "user_agent": req.headers.get("User-Agent", "")[:512],
+        }
+        headers = {"X-Cache-Proxy": "BLOCKED", "Cache-Control": "no-store"}
+        if verdict.category:
+            headers["X-Block-Category"] = verdict.category
+        page_load = req.method == "GET" and req.headers.get("Sec-Fetch-Dest", "").lower() == "document"
+        if config.BLOCKPAGE_URL and page_load:
+            store.record_blocks([row])  # now: the block page reads it back by token
+            headers["Location"] = f"{config.BLOCKPAGE_URL}/blocked?t={row['token']}"
+            flow.response = http.Response.make(302, b"", headers)
+        else:
+            self._pending_blocks.append(row)
+            if config.BLOCKPAGE_URL:
+                headers["Content-Type"] = "text/plain; charset=utf-8"
+                body = f"Blocked by proxy policy: {verdict.reason}\n".encode()
+            else:
+                headers["Content-Type"] = "text/html; charset=utf-8"
+                body = contentfilter.block_page(config.BLOCKPAGE_MESSAGE, req.host, verdict.reason)
+            flow.response = http.Response.make(403, body, headers)
+        self._count("blocked_requests")
+        logger.info("BLOCK %s (%s) <- %s", req.pretty_url, verdict.reason, ip)
+        return True
+
     async def requestheaders(self, flow: http.HTTPFlow) -> None:
+        if self._to_block_page(flow) or self._blocked(flow):
+            return
         if not self._coalescible(flow):
             return
         h = store.url_hash(flow.request.pretty_url)

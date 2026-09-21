@@ -10,6 +10,7 @@ DB and cache directory, so writes are atomic and connections wait on locks.
 """
 import hashlib
 import os
+import secrets
 import shutil
 import sqlite3
 import time
@@ -50,6 +51,25 @@ CREATE TABLE IF NOT EXISTS counters (
     name TEXT PRIMARY KEY,
     value INTEGER NOT NULL DEFAULT 0
 );
+-- Every request the content filter blocked. Deliberately never pruned (unlike
+-- access_log): it is the audit trail for what was blocked and who asked why.
+CREATE TABLE IF NOT EXISTS blocked (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT NOT NULL UNIQUE,
+    ts REAL NOT NULL,
+    client_ip TEXT,
+    host TEXT,
+    url TEXT,
+    kind TEXT,
+    category TEXT,
+    source TEXT,
+    reason TEXT,
+    user_agent TEXT,
+    unblock_requested_at REAL,
+    unblock_note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_blocked_ts ON blocked(ts);
+CREATE INDEX IF NOT EXISTS idx_blocked_requested ON blocked(unblock_requested_at);
 CREATE INDEX IF NOT EXISTS idx_access_log_ts ON access_log(ts);
 CREATE INDEX IF NOT EXISTS idx_access_log_client ON access_log(client_ip);
 CREATE INDEX IF NOT EXISTS idx_access_log_url_hash ON access_log(url_hash);
@@ -218,6 +238,67 @@ def delete_entry(url_hash_: str) -> bool:
         path.unlink(missing_ok=True)
         conn.execute("DELETE FROM files WHERE url_hash = ?", (url_hash_,))
         return True
+
+
+_BLOCK_COLS = ("token", "ts", "client_ip", "host", "url", "kind", "category", "source", "reason", "user_agent")
+
+
+def new_block_token() -> str:
+    # 128 random bits: the token is what lets a blocked user open their own
+    # block page, so it must not be guessable or sequential.
+    return secrets.token_urlsafe(16)
+
+
+def record_blocks(rows: list) -> None:
+    """rows: dicts with the _BLOCK_COLS keys. One transaction for the batch."""
+    if not rows:
+        return
+    with _connect() as conn:
+        conn.executemany(
+            f"INSERT INTO blocked ({', '.join(_BLOCK_COLS)}) VALUES ({', '.join('?' * len(_BLOCK_COLS))})",
+            [tuple(r[c] for c in _BLOCK_COLS) for r in rows],
+        )
+
+
+def get_block(token: str):
+    with _connect() as conn:
+        return conn.execute("SELECT * FROM blocked WHERE token = ?", (token,)).fetchone()
+
+
+def list_blocked(limit: int = 200, requested_only: bool = False):
+    query = "SELECT * FROM blocked"
+    if requested_only:
+        query += " WHERE unblock_requested_at IS NOT NULL"
+    query += " ORDER BY ts DESC LIMIT ?"
+    with _connect() as conn:
+        return conn.execute(query, (limit,)).fetchall()
+
+
+def mark_unblock_requested(token: str, note: str) -> bool:
+    """Atomically claim the one unblock request a block allows. False if it
+    was already requested (or the token is unknown)."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE blocked SET unblock_requested_at = ?, unblock_note = ? "
+            "WHERE token = ? AND unblock_requested_at IS NULL",
+            (time.time(), note, token),
+        )
+        return cur.rowcount == 1
+
+
+def clear_unblock_requested(token: str) -> None:
+    """Undo mark_unblock_requested when the email could not be sent, so the
+    user can try again."""
+    with _connect() as conn:
+        conn.execute("UPDATE blocked SET unblock_requested_at = NULL, unblock_note = NULL WHERE token = ?", (token,))
+
+
+def recent_unblock_requests(client_ip: str, since_ts: float) -> int:
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM blocked WHERE client_ip = ? AND unblock_requested_at >= ?",
+            (client_ip, since_ts),
+        ).fetchone()[0]
 
 
 def log_access(client_ip: str, url_hash_: str, filename: str, hit: bool, size: int) -> None:

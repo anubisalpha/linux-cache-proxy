@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Access blocked</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #f4f4f6; color: #1a1a1a; margin: 0; }
+    main { max-width: 40rem; margin: 8vh auto; background: #fff; padding: 1.5rem 2rem; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+    h1 { margin-top: 0; color: #b00020; }
+    dl { display: grid; grid-template-columns: 9rem 1fr; gap: .5rem 1rem; }
+    dt { font-weight: 600; color: #555; }
+    dd { margin: 0; word-break: break-all; }
+    .placeholder { color: #999; }
+    .notice { background: #eef3fb; border: 1px solid #c5d5ee; padding: .6rem .9rem; border-radius: 6px; }
+    .error { background: #fdecea; border: 1px solid #f0b4ae; padding: .6rem .9rem; border-radius: 6px; margin-bottom: 1rem; }
+    .ok { background: #e8f5ec; border: 1px solid #a9d8b8; padding: .6rem .9rem; border-radius: 6px; margin-bottom: 1rem; }
+    textarea { width: 100%; box-sizing: border-box; min-height: 5rem; padding: .5rem; font: inherit; }
+    button { margin-top: .5rem; padding: .5rem 1.1rem; font: inherit; cursor: pointer; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Access blocked</h1>
+  <p>{{ message }}</p>
+
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  {% if sent %}<div class="ok">Your unblock request has been sent to the administrator.</div>{% endif %}
+
+  {% if block %}
+    <dl>
+      <dt>Reason</dt><dd>{{ block.reason }}</dd>
+      {% if block.category %}<dt>Category</dt><dd>{{ block.category }}</dd>{% endif %}
+      <dt>Site</dt><dd>{{ block.host }}</dd>
+      <dt>Address (URL)</dt><dd>{{ block.url }}</dd>
+      <dt>Your IP address</dt><dd>{{ block.client_ip }}</dd>
+      <dt>Date and time</dt><dd>{{ block.when }}</dd>
+      <dt>Browser</dt><dd>{{ block.user_agent or '—' }}</dd>
+    </dl>
+
+    {% if block.already_requested %}
+      <p class="notice">An unblock request for this block has already been sent.</p>
+    {% elif can_request %}
+      <h2>Ask for this site to be unblocked</h2>
+      <p>The details above are sent to the administrator with your request.</p>
+      <form method="post" action="/unblock">
+        <input type="hidden" name="t" value="{{ token }}">
+        <label for="note">Why do you need this site? (optional)</label>
+        <textarea id="note" name="note" maxlength="1000"></textarea>
+        <button type="submit">Send unblock request</button>
+      </form>
+    {% else %}
+      <p class="notice">Unblock requests are not available right now.</p>
+    {% endif %}
+  {% else %}
+    <p class="notice">This page shows the details of a blocked request. You only see them when you are
+      sent here after trying to open a blocked site, and no request can be made from this page directly.</p>
+    <dl>
+      <dt>Reason</dt><dd class="placeholder">—</dd>
+      <dt>Site</dt><dd class="placeholder">—</dd>
+      <dt>Address (URL)</dt><dd class="placeholder">—</dd>
+      <dt>Your IP address</dt><dd class="placeholder">—</dd>
+      <dt>Date and time</dt><dd class="placeholder">—</dd>
+      <dt>Browser</dt><dd class="placeholder">—</dd>
+    </dl>
+  {% endif %}
+</main>
+</body>
+</html>

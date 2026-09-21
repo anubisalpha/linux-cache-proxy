@@ -49,8 +49,8 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - >
-        /opt/cache-proxy/venv-proxy/bin/pytest tests/test_store.py tests/test_config.py tests/test_addon_unit.py tests/test_addon_integration.py tests/test_ttl.py tests/test_analytics.py tests/test_supervisor.py tests/test_pool_integration.py tests/test_coalesce.py -v &&
-        /opt/cache-proxy/venv-webui/bin/pytest tests/test_store.py tests/test_config.py tests/test_auth.py tests/test_webui.py -v
+        /opt/cache-proxy/venv-proxy/bin/pytest tests/test_store.py tests/test_config.py tests/test_addon_unit.py tests/test_addon_integration.py tests/test_ttl.py tests/test_analytics.py tests/test_supervisor.py tests/test_pool_integration.py tests/test_coalesce.py tests/test_contentfilter.py tests/test_filterlists.py -v &&
+        /opt/cache-proxy/venv-webui/bin/pytest tests/test_store.py tests/test_config.py tests/test_auth.py tests/test_webui.py tests/test_blockpage.py -v
     environment:
       CACHE_PROXY_DIR: /tmp/test-cache/files
       CACHE_PROXY_DB: /tmp/test-cache/index.db

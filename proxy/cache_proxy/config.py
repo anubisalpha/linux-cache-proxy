@@ -22,6 +22,15 @@ NEVER_CACHE_HOSTS_FILE = Path(
 NEVER_INTERCEPT_HOSTS_FILE = Path(
     os.environ.get("CACHE_PROXY_NEVER_INTERCEPT_FILE", CONFIG_PATH.parent / "never-intercept-hosts.conf")
 )
+BLOCKED_HOSTS_FILE = Path(
+    os.environ.get("CACHE_PROXY_BLOCKED_HOSTS_FILE", CONFIG_PATH.parent / "blocked-hosts.conf")
+)
+ALLOWED_HOSTS_FILE = Path(
+    os.environ.get("CACHE_PROXY_ALLOWED_HOSTS_FILE", CONFIG_PATH.parent / "allowed-hosts.conf")
+)
+BLOCKED_URL_PATTERNS_FILE = Path(
+    os.environ.get("CACHE_PROXY_BLOCKED_URL_PATTERNS_FILE", CONFIG_PATH.parent / "blocked-url-patterns.conf")
+)
 
 _DEFAULTS = {
     "cache": {
@@ -90,6 +99,62 @@ _DEFAULTS = {
         "min_history_hours": 6,
         "lookback_hours": 168,
         "retention_days": 90,
+    },
+    # Content filtering. Downloaded category lists live under lists_dir (kept
+    # apart from /etc); the small hand-edited override files stay in /etc.
+    "filtering": {
+        "enabled": False,
+        "lists_dir": "/var/lib/cache-proxy/filter-lists",
+        # Categories that are enforced. Only these are downloaded.
+        "block_categories": ["adult", "gambling", "malware", "phishing"],
+        "sources": [
+            {
+                "name": "ut1",
+                "type": "ut1",
+                "url": "https://dsi.ut-capitole.fr/blacklists/download/{category}.tar.gz",
+                "categories": ["adult", "gambling", "phishing"],
+            },
+            {
+                # Their malware tarball currently contains the phishing list,
+                # so take this one category from the GitHub mirror instead.
+                "name": "ut1-malware",
+                "type": "domains",
+                "url": "https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/malware/domains",
+                "category": "malware",
+            },
+            {
+                "name": "phishing-database",
+                "type": "domains",
+                "url": "https://raw.githubusercontent.com/mitchellkrogza/Phishing.Database/master/phishing-domains-ACTIVE.txt",
+                "category": "phishing",
+                "refresh": "hourly",
+            },
+            {
+                "name": "urlhaus",
+                "type": "hosts",
+                "url": "https://urlhaus.abuse.ch/downloads/hostfile/",
+                "category": "malware",
+                "auth_key_env": "CACHE_PROXY_URLHAUS_KEY",
+                "refresh": "hourly",
+            },
+        ],
+    },
+    # The page blocked users are sent to (a separate small service).
+    "blockpage": {
+        "url": "",  # e.g. "http://cache-proxy.example.lan"; empty = inline 403 page
+        "port": 80,
+        "message": "This site is blocked by your organisation's web policy.",
+        "max_requests_per_ip_per_hour": 5,
+    },
+    # Outgoing mail for unblock requests. The password is NOT stored here:
+    # set CACHE_PROXY_SMTP_PASSWORD in /etc/cache-proxy/secrets.env.
+    "email": {
+        "smtp_host": "",
+        "smtp_port": 587,
+        "security": "starttls",  # starttls | ssl | none
+        "username": "",
+        "from_address": "",
+        "unblock_recipient": "",
     },
     "webui": {
         "port": 443,
@@ -163,6 +228,24 @@ RETENTION_DAYS = int(_cfg["analytics"]["retention_days"])
 
 CACHEABLE_EXTENSIONS = set(_cfg["cache"]["extensions"])
 CACHEABLE_CONTENT_TYPES = set(_cfg["cache"]["content_types"])
+
+FILTERING_ENABLED = os.environ.get("CACHE_PROXY_FILTERING", str(_cfg["filtering"]["enabled"])).lower() in ("1", "true", "yes")
+FILTER_LISTS_DIR = Path(os.environ.get("CACHE_PROXY_LISTS_DIR", _cfg["filtering"]["lists_dir"]))
+FILTER_BLOCK_CATEGORIES = [c.lower() for c in _cfg["filtering"]["block_categories"]]
+FILTER_SOURCES = list(_cfg["filtering"]["sources"])
+
+BLOCKPAGE_URL = os.environ.get("CACHE_PROXY_BLOCKPAGE_URL", _cfg["blockpage"]["url"]).rstrip("/")
+BLOCKPAGE_PORT = int(os.environ.get("CACHE_PROXY_BLOCKPAGE_PORT", _cfg["blockpage"]["port"]))
+BLOCKPAGE_MESSAGE = str(_cfg["blockpage"]["message"])
+UNBLOCK_MAX_PER_IP_HOUR = int(os.environ.get("CACHE_PROXY_UNBLOCK_MAX_PER_HOUR", _cfg["blockpage"]["max_requests_per_ip_per_hour"]))
+
+SMTP_HOST = os.environ.get("CACHE_PROXY_SMTP_HOST", _cfg["email"]["smtp_host"])
+SMTP_PORT = int(os.environ.get("CACHE_PROXY_SMTP_PORT", _cfg["email"]["smtp_port"]))
+SMTP_SECURITY = os.environ.get("CACHE_PROXY_SMTP_SECURITY", _cfg["email"]["security"]).lower()
+SMTP_USERNAME = _cfg["email"]["username"]
+SMTP_PASSWORD = os.environ.get("CACHE_PROXY_SMTP_PASSWORD", "")
+EMAIL_FROM = os.environ.get("CACHE_PROXY_EMAIL_FROM", _cfg["email"]["from_address"])
+UNBLOCK_RECIPIENT = os.environ.get("CACHE_PROXY_UNBLOCK_RECIPIENT", _cfg["email"]["unblock_recipient"])
 
 WEBUI_PORT = int(os.environ.get("CACHE_PROXY_WEBUI_PORT", _cfg["webui"]["port"]))
 WEBUI_USERNAME = os.environ.get("CACHE_PROXY_WEBUI_USERNAME", _cfg["webui"]["username"])

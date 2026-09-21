@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Blocked - Cache Proxy{% endblock %}
+{% block content %}
+  {% if msg %}<div class="{{ 'panel' if ok else 'warn' }}">{{ msg }}</div>{% endif %}
+
+  <div class="panel">
+    <strong>Content filtering:</strong> {{ 'on' if filtering_enabled else 'OFF (set [filtering] enabled = true in config.toml)' }}
+    &middot; enforced categories: {{ categories | join(', ') or 'none' }}
+    <p style="margin:.5rem 0 0">
+      <strong>Approving an unblock request:</strong> add the site's host on its own line to
+      <code>{{ allowed_file }}</code>. It covers subdomains, beats every block rule, and applies within about 10 seconds
+      (no restart). Each row below shows the exact line. To decline, do nothing.
+    </p>
+  </div>
+
+  <div class="panel">
+    <strong>Unblock-request email</strong>
+    {% if email_missing %}
+      &mdash; not configured, set in <code>[email]</code>: {{ email_missing | join(', ') }}
+    {% else %}
+      &mdash; requests go to <code>{{ recipient }}</code>
+    {% endif %}
+    <form method="post" action="/blocks/test-email" style="display:inline;margin-left:1rem">
+      <button type="submit" {{ 'disabled' if email_missing }}>Send test email</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <strong>Block lists</strong> (daily, plus hourly 08:00-18:00 Mon-Fri for fast-moving feeds; run <code>python -m cache_proxy.filterlists update</code> to refresh now)
+    {% if list_status %}
+    <table>
+      <tr><th>Source / category</th><th>Domains</th><th>Last updated</th><th>Last error</th></tr>
+      {% for key, v in list_status %}
+      <tr>
+        <td>{{ key }}</td>
+        <td>{{ v.get('count') or 0 }}</td>
+        <td>{{ v['ts'] | datetime if v.get('ts') else 'never' }}</td>
+        <td>{{ v.get('last_error') or '' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+      <p>No lists downloaded yet.</p>
+    {% endif %}
+  </div>
+
+  <div class="filters">
+    Show:
+    <a href="/blocks">all blocks</a>
+    <a href="/blocks?requested=1">only with an unblock request</a>
+  </div>
+
+  <table>
+    <tr><th>When</th><th>Client IP</th><th>Site</th><th>Reason</th><th>Browser</th><th>Unblock request</th></tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.ts | datetime }}</td>
+      <td>{{ r.client_ip }}</td>
+      <td>{{ r.host }}<div class="url">{{ r.url }}</div></td>
+      <td>{{ r.reason }}{% if r.source %}<div class="url">list: {{ r.source }}</div>{% endif %}</td>
+      <td class="url">{{ r.user_agent }}</td>
+      <td>
+        {% if r.unblock_requested_at %}
+          requested {{ r.unblock_requested_at | datetime }}
+          {% if r.unblock_note %}<div class="url">"{{ r.unblock_note }}"</div>{% endif %}
+          <div class="url">To allow, add to {{ allowed_file }}:<br><code>{{ r.allow_line }}</code></div>
+        {% else %}&mdash;{% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6">Nothing blocked yet.</td></tr>
+    {% endfor %}
+  </table>
+  <p class="url">The blocked table is never pruned. Showing the latest 500.</p>
+{% endblock %}

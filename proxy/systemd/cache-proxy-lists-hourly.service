@@ -1,0 +1,14 @@
+[Unit]
+Description=Hourly refresh of the fast-moving content-filter block lists
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cacheproxy
+Group=cacheproxy
+WorkingDirectory=/opt/cache-proxy
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=-/etc/cache-proxy/secrets.env
+# Only sources marked refresh = "hourly" in config.toml (URLhaus, Phishing.Database).
+ExecStart=/opt/cache-proxy/venv-proxy/bin/python3 -m cache_proxy.filterlists update --frequency hourly

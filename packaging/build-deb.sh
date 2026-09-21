@@ -27,8 +27,8 @@ find "$PKG_ROOT/opt/cache-proxy/cache_proxy" -name "__pycache__" -type d -exec r
 find "$PKG_ROOT/opt/cache-proxy/cache_proxy" -type d -exec chmod 755 {} +
 find "$PKG_ROOT/opt/cache-proxy/cache_proxy" -type f -exec chmod 644 {} +
 
-cp "$REPO_ROOT/proxy/run_proxy.sh" "$REPO_ROOT/proxy/run_webui.sh" "$PKG_ROOT/opt/cache-proxy/"
-chmod 755 "$PKG_ROOT/opt/cache-proxy/run_proxy.sh" "$PKG_ROOT/opt/cache-proxy/run_webui.sh"
+cp "$REPO_ROOT/proxy/run_proxy.sh" "$REPO_ROOT/proxy/run_webui.sh" "$REPO_ROOT/proxy/run_blockpage.sh" "$PKG_ROOT/opt/cache-proxy/"
+chmod 755 "$PKG_ROOT/opt/cache-proxy/run_proxy.sh" "$PKG_ROOT/opt/cache-proxy/run_webui.sh" "$PKG_ROOT/opt/cache-proxy/run_blockpage.sh"
 
 # --- bundled venvs (built now, shipped in the package -- no pip on target) ---
 python3 -m venv "$PKG_ROOT/opt/cache-proxy/venv-proxy"
@@ -79,9 +79,8 @@ done
 cp "$REPO_ROOT/packaging/etc/cache-proxy/"* "$PKG_ROOT/etc/cache-proxy/"
 chmod 644 "$PKG_ROOT/etc/cache-proxy/"*
 
-cp "$REPO_ROOT/proxy/systemd/cache-proxy.service" "$REPO_ROOT/proxy/systemd/cache-webui.service" \
-  "$PKG_ROOT/etc/systemd/system/"
-chmod 644 "$PKG_ROOT/etc/systemd/system/"*.service
+cp "$REPO_ROOT/proxy/systemd/"*.service "$REPO_ROOT/proxy/systemd/"*.timer "$PKG_ROOT/etc/systemd/system/"
+chmod 644 "$PKG_ROOT/etc/systemd/system/"*.service "$PKG_ROOT/etc/systemd/system/"*.timer
 
 cp "$REPO_ROOT/README.md" "$PKG_ROOT/usr/share/doc/cache-proxy/"
 chmod 644 "$PKG_ROOT/usr/share/doc/cache-proxy/README.md"

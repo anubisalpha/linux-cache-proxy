@@ -1,5 +1,5 @@
 [Unit]
-Description=Cache proxy web UI
+Description=Cache proxy block page (shown to users when a site is blocked)
 After=network.target
 
 [Service]
@@ -11,14 +11,12 @@ Environment=CACHE_PROXY_DIR=/var/lib/cache-proxy/files
 Environment=CACHE_PROXY_DB=/var/lib/cache-proxy/index.db
 Environment=PATH=/opt/cache-proxy/venv-webui/bin:/usr/bin:/bin
 Environment=PYTHONDONTWRITEBYTECODE=1
-# Web UI listens on 443 (configurable in config.toml) as the non-root
-# cacheproxy user -- this grants just enough capability to bind it,
-# instead of running the service as root or setcap'ing the venv binary.
-# SMTP password for the "Send test email" button.
+# SMTP password for unblock-request email (optional file).
 EnvironmentFile=-/etc/cache-proxy/secrets.env
+# Listens on port 80 as the non-root cacheproxy user.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-ExecStart=/bin/bash /opt/cache-proxy/run_webui.sh
+ExecStart=/bin/bash /opt/cache-proxy/run_blockpage.sh
 Restart=on-failure
 RestartSec=5
 
