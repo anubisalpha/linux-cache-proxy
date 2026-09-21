@@ -2,7 +2,11 @@
 
 A native-Linux caching setup for reducing repeated software-update and
 installer downloads across a workplace network, with a web UI to browse,
-search, and delete cached files, and per-client usage logging.
+search, and delete cached files, and per-client usage logging. The general
+download cache can also act as a **content filter**: it blocks sites by
+category (adult, gambling, malware, phishing and dozens more) from lists it
+downloads and refreshes itself, shows blocked users an explanatory page,
+records every block, and lets users ask for an unblock by email.
 
 Three parts, each solving a different traffic type:
 
@@ -23,9 +27,9 @@ This README is the overview. The detail is in `docs/`:
 | Guide | What's in it |
 |---|---|
 | [Building and installing](docs/building.md) | Build prerequisites, building the `.deb` (on Ubuntu or in Docker), step-by-step install and first-run setup, connecting clients, checking it works, what is installed where, the Docker demo, running the tests |
-| [Configuration reference](docs/configuration.md) | Every `config.toml` setting with defaults and guidance, the host exclusion lists, settings that live outside the config file, environment variable overrides |
-| [Web interface](docs/web-interface.md) | A tour of each page with screenshots, how to read the stats page and its flags, the JSON API, security notes |
-| [Operations](docs/operations.md) | Services and logs, checking caching works, sizing, network and security, upgrading, backup and restore, troubleshooting, removal |
+| [Configuration reference](docs/configuration.md) | Every `config.toml` setting with defaults and guidance, the host exclusion lists, **content filtering** (list sources and refresh schedule, choosing categories, the block page, unblock-request email, the `blocked` table), settings that live outside the config file, environment variable overrides |
+| [Web interface](docs/web-interface.md) | A tour of each admin page (files, usage and stats with screenshots; blocked and categories described), the page blocked users see, the shared menu, how to read the stats page and its flags, the JSON API, security notes |
+| [Operations](docs/operations.md) | Services, timers and logs, checking caching and filtering work, sizing, network and security, upgrading, backup and restore, troubleshooting, removal |
 
 ## 1. General download cache (`proxy/`)
 
@@ -53,6 +57,10 @@ This README is the overview. The detail is in `docs/`:
     series at `/api/hourly-stats` (JSON, for Grafana's JSON API datasource)
   - `/` also shows the worker pool (active/max workers, pool and
     per-worker CPU, connections), refreshed live from `/api/workers`
+  - `/blocks` — recent blocks, unblock requests with the exact line to add to
+    approve one, block-list status, and a test-email button
+  - `/categories` — tick which content-filter categories to block
+  - every page shares one header and menu (`templates/header.html`)
 - **Worker pool** (`cache_proxy/supervisor.py`): one mitmproxy process
   uses about one CPU core, so the proxy runs a pool of them sharing port
   8080 (`SO_REUSEPORT` — the kernel spreads connections across workers and
@@ -102,6 +110,45 @@ This README is the overview. The detail is in `docs/`:
   "Usage" here means what `access_log` records — cache hits and newly
   stored downloads — not all browsing. Flagging is on-screen/JSON only;
   nothing is pushed anywhere yet.
+
+### Content filtering
+
+Off until you enable it (`[filtering] enabled = true`, then restart). Full
+detail is in the [configuration reference](docs/configuration.md#content-filtering-filtering-blockpage-email);
+in short:
+
+- **Category lists** come from UT1 (Université Toulouse Capitole; 61
+  categories), Phishing.Database and URLhaus. They are downloaded by a
+  daily timer (plus an hourly refresh, 08:00 to 18:00 Monday to Friday, for
+  the fast-moving malware and phishing feeds) into
+  `/var/lib/cache-proxy/filter-lists/`, kept apart from `/etc`. A bad or
+  truncated download never replaces a good list.
+- **You choose what is blocked** on the web UI **Categories** page: tick
+  categories, save, and the proxy applies it within about 10 seconds. The
+  selection is stored in `/etc/cache-proxy/filter-categories.conf`.
+- **Your own rules** live in `blocked-hosts.conf`, `allowed-hosts.conf` (never
+  blocked, and where approved unblock requests go) and
+  `blocked-url-patterns.conf`. Precedence: allow-list, blocked hosts,
+  category lists, URL patterns.
+- **HTTPS is filtered** for every host not in `never-intercept-hosts.conf`.
+- **Blocked users** are redirected to a page on port 80 (its own service,
+  `cache-blockpage`) showing the reason or category, the URL, their IP, the
+  time and their browser. Only page loads are redirected; everything else
+  gets a plain `403`. The page only shows details, and only offers the
+  unblock form, for a real block recorded for the viewer's own IP.
+- **Every block is recorded** in a never-pruned `blocked` table.
+- **Unblock requests** are emailed to an address in `config.toml`
+  (`[email]`, password in `secrets.env`). The email says exactly which line
+  to add to `allowed-hosts.conf` to approve it. The web UI **Blocked** page
+  has a **Send test email** button.
+- **Size:** the default lists are about 5.5 million domains, kept as
+  memory-mapped hash indexes: well under a second to load, and almost no extra
+  memory per worker.
+
+Set it up in this order: `[blockpage] url` and `[email]` in `config.toml`,
+the SMTP password in `/etc/cache-proxy/secrets.env`, download the lists
+(`sudo -u cacheproxy /opt/cache-proxy/venv-proxy/bin/python3 -m
+cache_proxy.filterlists update`), then set `enabled = true`.
 
 ### Installing the package
 
@@ -171,6 +218,7 @@ Preferences → Control Panel Settings → Internet Settings) or WPAD:
 | `never-cache-hosts.conf` | Hosts (+ subdomains) proxied normally but never written to the cache |
 | `never-intercept-hosts.conf` | Hosts (+ subdomains) that bypass TLS interception entirely — mitmproxy tunnels them raw. Use for cert-pinned apps and anything sensitive (banking, etc). Implies never-cache for the same host |
 | `blocked-hosts.conf` / `allowed-hosts.conf` / `blocked-url-patterns.conf` | Content filtering overrides (off until `[filtering] enabled = true`): extra hosts to block, hosts never blocked (where approved unblock requests go), URL regexes. Downloaded category lists live separately in `/var/lib/cache-proxy/filter-lists`. Re-read automatically |
+| `filter-categories.conf` | The enforced content-filter categories, one per line. Written by the web UI **Categories** page (overrides `block_categories` in `config.toml`); hand-editing is fine |
 | `secrets.env` | SMTP password and URLhaus key, kept out of `config.toml` (root and service group only) |
 
 Both host-list files are one pattern per line, `#` comments, `*.` prefix
@@ -187,6 +235,15 @@ wired up for some reason.
 
 ### Known limits
 
+- **Content filtering only sees traffic the proxy decrypts.** Hosts in
+  `never-intercept-hosts.conf` are tunnelled raw and are not filtered, and
+  clients that bypass the proxy (VPN, DNS-over-HTTPS with a direct route,
+  no proxy configured) are not filtered either. It is a host/URL filter
+  driven by third-party lists, not content inspection, and those lists can
+  be wrong in both directions (use the allow-list for false positives). A
+  newly reported malware or phishing domain can stay reachable until the next
+  refresh. For HTTPS sites a client must trust the proxy CA, otherwise it
+  gets a certificate error before any block page can be shown.
 - Alerts are visible on `/stats` and via the JSON API only; there is no
   email/Slack push.
 - Scaling down never interrupts a client, so under steady light traffic
@@ -286,15 +343,23 @@ integration test. Run it in the real target OS rather than relying on
 whatever's installed locally:
 
 ```bash
-docker compose build
-docker compose run --rm test      # runs both venvs' test suites
-docker compose up -d cache-proxy cache-webui   # run the real services
+docker compose --profile test build   # the test image is profile-gated: plain
+                                      # `build` would leave it stale
+docker compose run --rm test          # runs both venvs' test suites
+docker compose up -d cache-proxy cache-webui cache-blockpage   # the real services
 ```
 
 `compose.yml` builds one image (`docker/Dockerfile`, Ubuntu 24.04) with
-both venvs, and three services: `cache-proxy`, `cache-webui` (sharing a
-named volume so the UI can see what the proxy caches), and `test`
-(profile-gated, ephemeral cache dir).
+both venvs, and four services: `cache-proxy`, `cache-webui` and
+`cache-blockpage` (sharing a named volume so the UI sees what the proxy
+caches and blocks), and `test` (profile-gated, ephemeral cache dir). The suite
+is currently 156 proxy-venv tests and 64 web-UI-venv tests, including real
+mitmdump runs for the block redirect, the plain 403 and the block-page routing,
+and a fake SMTP server for the unblock email.
+
+The demo block page is at `http://localhost:8081/` (the package uses port
+80). It shows a template only, with no details or form, unless you arrive with
+a valid block token, which only a real blocked request creates.
 
 `cache-webui` serves HTTPS on host port **8443** (container 443) with a
 throwaway self-signed cert and demo login `admin` / `cache-proxy-dev` —
@@ -314,7 +379,7 @@ docs/
 proxy/
   requirements-proxy.txt   # mitmproxy + pytest
   requirements-webui.txt   # fastapi/uvicorn/jinja2 + pytest
-  run_proxy.sh / run_webui.sh   # read config.toml/host-list files at startup
+  run_proxy.sh / run_webui.sh / run_blockpage.sh   # read config.toml/host-list files at startup
   cache_proxy/
     config.py              # loads /etc/cache-proxy/config.toml + host-list files
     store.py               # SQLite index, file storage, usage log, quota/expiry,
@@ -325,21 +390,29 @@ proxy/
     worker_main.py         # launches one worker with SO_REUSEPORT enabled
     workers.py             # reads the supervisor's status snapshot for the UI
     analytics.py           # hourly per-client series and anomaly detection
+    contentfilter.py       # blocking decision: allow-list, hosts, category hash indexes, URL patterns
+    filterlists.py         # downloads/refreshes the category lists (CLI: update, status)
+    categories.py          # the 61-category catalogue and the saved selection
+    mailer.py              # unblock-request and test emails (CLI: --test)
+    blockpage/             # the page blocked users see (port 80): app.py, templates/
     webui/
       app.py               # FastAPI app: files, usage, stats, JSON API, actions
       auth.py              # HTTP Basic Auth, PBKDF2 password hashing
       hash_password.py     # CLI: generate a password_hash for config.toml
-      templates/           # base, index (files + worker panel), usage, stats
-  systemd/cache-proxy.service, cache-webui.service
+      templates/           # base + header (shared menu), index (files + worker panel),
+                           #   usage, stats, blocks, categories
+  systemd/                 # cache-proxy, cache-webui, cache-blockpage services;
+                           #   cache-proxy-lists (daily) and -hourly service+timer pairs
   tests/                   # pytest: store, config, auth, webui, addon (unit +
                            #   integration), TTLs, analytics, supervisor, worker
-                           #   pool and coalescing end-to-end
+                           #   pool and coalescing end-to-end, content filter, list
+                           #   downloader, block page + unblock email, categories page
 docker/Dockerfile
 compose.yml
 packaging/
   build-deb.sh            # builds cache-proxy_<version>_amd64.deb, bundles both venvs
   debian/                 # control, postinst, prerm, postrm, conffiles
-  etc/cache-proxy/        # default config.toml + host-list files shipped in the package
+  etc/cache-proxy/        # default config.toml, host lists, filter lists/categories, secrets.env
 apt-cacher-ng/
   zzz_cache-proxy.conf
   configure-client.sh

@@ -75,7 +75,7 @@ set `MSYS_NO_PATHCONV=1` first.)
   their dependencies conflict, so they can't share one), installs the
   requirements into them, fixes the environments' paths so they work from
   their installed location, adds the default configuration and the systemd unit
-  files, and runs `dpkg-deb`.
+  and timer files, and runs `dpkg-deb`.
 - **Test-only dependencies (`pytest`) are removed** from the bundled
   environments before packaging.
 
@@ -90,8 +90,9 @@ sudo apt install ./cache-proxy_1.1.1_amd64.deb
 ```
 
 This creates a `cacheproxy` system user and `/var/lib/cache-proxy`, generates
-a self-signed certificate for the web UI, and installs and **enables** both
-services but does **not start** them. That is deliberate: once running, the
+a self-signed certificate for the web UI, and installs and **enables** the
+services (`cache-proxy`, `cache-webui`, `cache-blockpage`) and the block-list
+refresh timers, but does **not start** them. That is deliberate: once running, the
 proxy intercepts HTTPS traffic and the web UI has no password yet, so it
 waits for you to finish setup.
 
@@ -132,6 +133,10 @@ counts (`[proxy] min_workers`, `max_workers`). See the
 sudo systemctl start cache-proxy cache-webui
 ```
 
+`cache-blockpage` and the two `cache-proxy-lists` timers belong to
+[content filtering](#6-optional-turn-on-content-filtering); start them when you
+set that up (they are harmless to start now).
+
 ### 5. Point clients at it
 
 Nothing is cached until clients use the proxy, and HTTPS only works once they
@@ -147,12 +152,47 @@ trust its certificate authority.
    (Computer/User Configuration → Preferences → Control Panel Settings →
    Internet Settings), by WPAD, or on each application.
 3. **Open the network ports:** clients to the proxy on TCP 8080, and
-   administrators to the web UI on TCP 443. Port 8080 has no
+   administrators to the web UI on TCP 443. If you use content filtering,
+   clients also need TCP 80 to the block page. Port 8080 has no
    authentication, so limit it to your client networks (see
    [network and security](operations.md#network-and-security)).
 
 For the Debian/Ubuntu package cache and the RPM cache, which are separate
 components with their own client setup, see the [README](../README.md).
+
+### 6. Optional: turn on content filtering
+
+Content filtering is off after install. The pieces, in the order to set them
+up (all of them are described in the
+[configuration reference](configuration.md#content-filtering-filtering-blockpage-email)):
+
+1. **Say where the block page is.** In `/etc/cache-proxy/config.toml`, under
+   `[blockpage]`, set `url` to how clients reach this machine, for example
+   `"http://cache-proxy.example.lan"`. Clients must be able to reach port 80.
+2. **Set up the unblock-request email.** Fill in `[email]` (`smtp_host`,
+   `smtp_port`, `security`, `username`, `from_address`, `unblock_recipient`).
+   Put the SMTP password in `/etc/cache-proxy/secrets.env` as
+   `CACHE_PROXY_SMTP_PASSWORD=...`. Optionally add your URLhaus key there as
+   `CACHE_PROXY_URLHAUS_KEY=...`.
+3. **Download the block lists** (about 30 MB for the defaults):
+   ```bash
+   sudo -u cacheproxy /opt/cache-proxy/venv-proxy/bin/python3 -m cache_proxy.filterlists update
+   sudo -u cacheproxy /opt/cache-proxy/venv-proxy/bin/python3 -m cache_proxy.filterlists status
+   ```
+4. **Turn it on:** set `enabled = true` under `[filtering]`, then
+   ```bash
+   sudo systemctl restart cache-proxy cache-webui
+   sudo systemctl start cache-blockpage cache-proxy-lists.timer cache-proxy-lists-hourly.timer
+   ```
+5. **Choose the categories** on the web UI **Categories** page, and send a
+   **test email** from the **Blocked** page.
+6. **Try it:** from a client that uses the proxy and trusts its CA, open a site
+   from an enforced category. You should land on the block page, and the block
+   should appear on the **Blocked** page.
+
+Before switching it on for users, read the
+[privacy note](operations.md#network-and-security): every block is recorded
+with the user's IP and the URL, and the table is never pruned.
 
 ---
 
@@ -160,7 +200,10 @@ components with their own client setup, see the [README](../README.md).
 
 ```bash
 # Both services running?
-sudo systemctl status cache-proxy cache-webui
+sudo systemctl status cache-proxy cache-webui cache-blockpage
+
+# Block page answering (content filtering only); should print 1
+curl -s http://localhost/ | grep -c 'Access blocked'
 
 # Web UI answering, and how many workers are running (replace admin:PASSWORD;
 # -k accepts the self-signed certificate)
@@ -207,6 +250,9 @@ docker compose up -d cache-proxy cache-webui
   certificate warning). The login is `admin` / `cache-proxy-dev`. That demo
   login is baked into `compose.yml` for this setup only and is never used by the
   real package.
+- The block page is at `http://localhost:8081/` (`docker compose up -d
+  cache-blockpage`; the package uses port 80). Opened directly it shows a
+  template only. Real block-page content needs a block recorded by the proxy.
 - The services share a named volume, so the UI sees what the proxy caches.
 
 This is a demo for trying things out, not a production deployment.
@@ -216,11 +262,16 @@ This is a demo for trying things out, not a production deployment.
 ## Running the tests
 
 ```bash
-docker compose build
+docker compose --profile test build
 docker compose run --rm test
 ```
+
+(`--profile test` matters: the test image belongs to a profile, so a plain
+`docker compose build` leaves it stale and the run would test old code.)
 
 This runs the full suite in the Ubuntu 24.04 image against a throwaway
 cache: the proxy's own tests (which include real end-to-end runs with actual
 mitmproxy processes and a worker pool) and then the web UI's tests. It takes
-a few minutes. Everything should pass.
+a few minutes. Everything should pass. The content-filtering tests use local
+fake servers (a list server, and an SMTP server for the unblock email), so they
+never touch the internet or send real mail.

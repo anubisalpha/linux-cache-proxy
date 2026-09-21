@@ -1,13 +1,18 @@
 # Configuration reference
 
-All settings live in `/etc/cache-proxy/config.toml`, plus two host-list files
-in the same directory. Every key is optional: anything you leave out (or any
+All settings live in `/etc/cache-proxy/config.toml`, plus a few small list
+files in the same directory (the two host exclusion lists, and the content
+filtering lists), and a `secrets.env` for passwords. Every key is optional: anything you leave out (or any
 key added by a newer version that your older file doesn't contain) falls back
 to the built-in default listed below, so you can trim the file down to only
 what you've changed.
 
-**Changes need a restart:** `sudo systemctl restart cache-proxy cache-webui`.
-There is no live reload.
+**Changes to `config.toml` need a restart:**
+`sudo systemctl restart cache-proxy cache-webui` (and `cache-blockpage` if you
+changed `[blockpage]` or `[email]`). The exceptions are the content-filtering
+files (`blocked-hosts.conf`, `allowed-hosts.conf`, `blocked-url-patterns.conf`,
+`filter-categories.conf` and the downloaded lists), which the proxy re-reads
+within about 10 seconds of a change, with no restart.
 
 The shipped `config.toml` has a comment above every setting; this page adds
 defaults, units and the reasoning for choosing values.
@@ -18,6 +23,7 @@ defaults, units and the reasoning for choosing values.
 - [`[analytics]`](#analytics)
 - [`[webui]`](#webui)
 - [Host exclusion lists](#host-exclusion-lists)
+- [Content filtering](#content-filtering-filtering-blockpage-email): [`[filtering]`](#filtering), [choosing categories](#choosing-categories-web-ui-categories-page), [your own lists](#your-own-lists-in-etccache-proxy), [`[blockpage]`](#blockpage), [`[email]`](#email), [approving a request](#approving-an-unblock-request), [the `blocked` table](#the-blocked-table)
 - [Settings that are not in `config.toml`](#settings-that-are-not-in-configtoml)
 - [Environment variable overrides](#environment-variable-overrides)
 
@@ -239,7 +245,7 @@ hosts > category lists > URL patterns**.
 |---|---|---|
 | `enabled` | `false` | Master switch. Restart `cache-proxy` after changing it. |
 | `lists_dir` | `/var/lib/cache-proxy/filter-lists` | Where downloaded lists are kept, deliberately outside `/etc`. |
-| `block_categories` | adult, gambling, malware, phishing | Categories that are enforced. Only these are downloaded. |
+| `block_categories` | adult, gambling, malware, phishing | The **default** set of enforced categories. `/etc/cache-proxy/filter-categories.conf`, which the web UI Categories page writes, overrides it when present. Only enforced categories are downloaded. |
 | `[[filtering.sources]]` | UT1, UT1 malware mirror, Phishing.Database, URLhaus | Where lists come from (below). Listing sources in `config.toml` **replaces** the built-in set. |
 
 Each source has a `name`, a `type` and a `url`, plus `category` (or
@@ -247,7 +253,12 @@ Each source has a `name`, a `type` and a `url`, plus `category` (or
 filled in). Types: `ut1` (a UT1 category tarball), `domains` (one domain per
 line), `hosts` (hosts-file lines such as `0.0.0.0 bad.example`).
 `auth_key_env` names an environment variable, set in `secrets.env`, that is
-sent as an `Auth-Key` header.
+sent as an `Auth-Key` header. `refresh = "hourly"` adds the source to the
+hourly refresh (default `daily`; see **Refreshing** below). A `ut1` source with
+no `categories` key offers every UT1 category, and only the ones you enable are
+fetched. UT1's own `malware` tarball currently holds the phishing list, so
+malware comes from UT1's GitHub mirror (the `ut1-malware` source); the
+downloader refuses a tarball that doesn't contain the category it asked for.
 
 | Source | Category | Licence / terms (check before relying on it) |
 |---|---|---|
@@ -256,8 +267,43 @@ sent as an `Auth-Key` header.
 | [URLhaus (abuse.ch)](https://urlhaus.abuse.ch/api/) | malware | Free under fair use; their API page says downloads need an `Auth-Key` (free) and points commercial users to a paid API. In testing the host file downloaded without one, but set `CACHE_PROXY_URLHAUS_KEY` in `secrets.env` to be safe. |
 
 UT1 has many more categories (`bank`, `chat`, `dating`, `social_networks`,
-`vpn`, `warez`, and so on). Add a name to `block_categories` and to the
-UT1 source's `categories` to use one.
+`vpn`, `warez`, and so on): 61 are offered in total. Choose them on the web UI
+**Categories** page (below).
+
+### Choosing categories (web UI **Categories** page)
+
+The **Categories** page lists every category that can be enforced, grouped
+(Security, Adult, Gambling and games, Social and communication, Media and
+content, Money and shopping, Circumvention and network), each with a
+description, the source that supplies it, and how many domains are
+downloaded. There is a search box. Tick the ones to block and press **Save
+selection**:
+
+- The selection is written to `/etc/cache-proxy/filter-categories.conf`, one
+  category per line. If that file exists it **overrides `block_categories` in
+  `config.toml`**, which then only acts as the default for a fresh install.
+  It is a separate file so the web UI (which runs as the unprivileged
+  `cacheproxy` user) never needs write access to `config.toml`, with its
+  password hash and comments. You can also edit it by hand.
+- The proxy picks the change up within about 10 seconds, with no restart.
+- Lists for categories that were just ticked are downloaded in the
+  background (adult is about 18 MB; one download runs at a time, and saving
+  again while a download is running does not queue it twice). A category that
+  is ticked but shows "not downloaded" has no list yet, so nothing is being
+  blocked for it: refresh the page, or check the error on the **Blocked**
+  page.
+- Unticking stops the blocking. Already-downloaded lists stay on disk.
+- Categories with no configured source can't be enforced, so they aren't
+  listed. Sources you add in `config.toml` appear under **Other**.
+- The save is refused if it comes from another site (the admin login is HTTP
+  Basic, which browsers resend automatically), and unknown names are ignored.
+
+The package makes the file writable by the service
+(`root:cacheproxy`, mode 664). If the page says it can't save, fix the
+permissions with the command it shows.
+
+The web UI pages share one header and menu (`templates/header.html`); add a
+page to the menu by adding a row there.
 
 **Refreshing.** Two timers keep the lists current:
 
@@ -420,7 +466,7 @@ real install use `config.toml`, or a `systemctl edit` drop-in as above.
 
 | Variable | Overrides |
 |---|---|
-| `CACHE_PROXY_CONFIG` | Path of the config file itself (default `/etc/cache-proxy/config.toml`). The two host-list files are looked up in the same directory. |
+| `CACHE_PROXY_CONFIG` | Path of the config file itself (default `/etc/cache-proxy/config.toml`). The host-list and filtering files are looked up in the same directory. |
 | `CACHE_PROXY_NEVER_CACHE_FILE`, `CACHE_PROXY_NEVER_INTERCEPT_FILE` | Paths of the two host-list files. |
 | `CACHE_PROXY_DIR`, `CACHE_PROXY_DB` | `[cache] dir`, `db` |
 | `CACHE_PROXY_MIN_SIZE` | `[cache] min_size_mb`, **in bytes** |
@@ -429,6 +475,13 @@ real install use `config.toml`, or a `systemctl edit` drop-in as above.
 | `CACHE_PROXY_WEBCACHE_TTL_MINUTES` | `[webcache] ttl_minutes` |
 | `CACHE_PROXY_MIN_WORKERS`, `CACHE_PROXY_MAX_WORKERS`, `CACHE_PROXY_SAMPLE_INTERVAL`, `CACHE_PROXY_SCALE_DOWN_IDLE_SECONDS`, `CACHE_PROXY_STATUS_FILE` | the matching `[proxy]` keys |
 | `CACHE_PROXY_WEBUI_PORT`, `CACHE_PROXY_WEBUI_USERNAME`, `CACHE_PROXY_WEBUI_PASSWORD_HASH`, `CACHE_PROXY_WEBUI_TLS_CERT`, `CACHE_PROXY_WEBUI_TLS_KEY` | the matching `[webui]` keys |
+| `CACHE_PROXY_FILTERING` | `[filtering] enabled` (`1`/`true`/`yes`) |
+| `CACHE_PROXY_LISTS_DIR`, `CACHE_PROXY_CATEGORIES_FILE` | `[filtering] lists_dir`; the path of `filter-categories.conf` |
+| `CACHE_PROXY_BLOCKED_HOSTS_FILE`, `CACHE_PROXY_ALLOWED_HOSTS_FILE`, `CACHE_PROXY_BLOCKED_URL_PATTERNS_FILE` | Paths of the three hand-edited filtering files |
+| `CACHE_PROXY_BLOCKPAGE_URL`, `CACHE_PROXY_BLOCKPAGE_PORT`, `CACHE_PROXY_UNBLOCK_MAX_PER_HOUR` | `[blockpage] url`, `port`, `max_requests_per_ip_per_hour` |
+| `CACHE_PROXY_SMTP_HOST`, `CACHE_PROXY_SMTP_PORT`, `CACHE_PROXY_SMTP_SECURITY`, `CACHE_PROXY_EMAIL_FROM`, `CACHE_PROXY_UNBLOCK_RECIPIENT` | the matching `[email]` keys |
+| `CACHE_PROXY_SMTP_PASSWORD` | The SMTP password. **Environment only** (set it in `secrets.env`); there is no `config.toml` key for it. |
+| `CACHE_PROXY_URLHAUS_KEY` | The URLhaus `Auth-Key`, read because the URLhaus source names it in `auth_key_env`. Environment only. |
 | `CACHE_PROXY_PORT` | The proxy listening port (default 8080). Environment only. |
 | `CACHE_PROXY_CONFDIR` | Where mitmproxy keeps its CA (default `/var/lib/cache-proxy/mitmproxy-ca`). |
 | `CACHE_PROXY_REFRESH_INTERVAL` | Seconds between each worker refreshing its view of the cache (default 10). |

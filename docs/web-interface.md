@@ -9,14 +9,23 @@ It listens on **HTTPS port 443** by default (`[webui] port` in
 browser will warn on first visit. See [configuration](configuration.md#webui)
 to set a login and to use your own certificate.
 
-> The screenshots below are from a demo instance filled with made-up traffic
-> (seven imaginary clients on `10.20.4.x`, and a stand-in download server).
-> They show what each page looks like, not real usage.
+Every admin page shares one header and menu: **Cached Files, Usage, Stats,
+Blocked, Categories**, with the current page underlined. The header is a
+separate template (`cache_proxy/webui/templates/header.html`) included by
+`base.html`, so a new page appears in the menu by adding one row there.
+
+> The Files, Usage and Stats screenshots below are from a demo instance filled
+> with made-up traffic (seven imaginary clients on `10.20.4.x`, and a stand-in
+> download server). They show what each page looks like, not real usage. The
+> Blocked and Categories pages are described in words only.
 
 - [Signing in](#signing-in)
 - [Cached files (`/`)](#cached-files-)
 - [Usage (`/usage`)](#usage-usage)
 - [Stats (`/stats`)](#stats-stats)
+- [Blocked (`/blocks`)](#blocked-blocks)
+- [Categories (`/categories`)](#categories-categories)
+- [The block page (what a blocked user sees)](#the-block-page-what-a-blocked-user-sees)
 - [JSON API](#json-api)
 - [Security notes](#security-notes)
 
@@ -169,6 +178,118 @@ as a new download.
 
 ---
 
+## Blocked (`/blocks`)
+
+The admin view of content filtering. It has four parts, top to bottom:
+
+- **Status line.** Whether filtering is on (`[filtering] enabled`) and which
+  categories are enforced. It also says how to approve an unblock request
+  (below).
+- **Unblock-request email.** Whether `[email]` is configured, and if not, which
+  settings are still empty. Where it is configured, the address requests go to
+  and a **Send test email** button. Pressing it sends a short message to
+  `unblock_recipient` and reports success, or the error (wrong password,
+  refused connection, and so on), at the top of the page. Use it before
+  relying on unblock requests.
+- **Block lists.** One row per source and category: how many domains, when it
+  last updated, and the last error if a refresh failed. A failed refresh keeps
+  the previous list in use, so an error here means the list is getting stale,
+  not that blocking stopped.
+- **Recent blocks.** The latest 500, newest first: time, client IP, the site
+  and full URL, the reason (and which list supplied it), the browser string and
+  whether the user asked for an unblock. The **only with an unblock request** link
+  narrows it to the ones needing a decision.
+
+**Approving a request.** For each row with an unblock request the page shows
+the exact line to add, and the file to add it to:
+
+```
+To allow, add to /etc/cache-proxy/allowed-hosts.conf:
+shop.example.com
+```
+
+That file is read by the proxy within about 10 seconds. The host and all its
+subdomains stop being blocked, whatever rule blocked them (a category list, the
+administrator's list or a URL pattern). There is no button and no restart. To
+decline, do nothing. The user is not told the outcome by the proxy, so reply to
+them yourself.
+
+The table behind this page is never pruned; see
+[configuration](configuration.md#the-blocked-table).
+
+---
+
+## Categories (`/categories`)
+
+Choose which content-filter categories are blocked.
+
+- **61 categories in 7 groups** (Security, Adult, Gambling and games, Social
+  and communication, Media and content, Money and shopping, Circumvention and
+  network). Each row has a checkbox, the category name, a description, the
+  source that supplies it, the number of domains downloaded and when they were
+  last updated.
+- **Ticked** means enforced. **Search categories** filters the list as you
+  type; a group with no match hides itself. A counter shows how many boxes are
+  ticked.
+- **Save selection** (top and bottom of the page) writes the selection to
+  `/etc/cache-proxy/filter-categories.conf`. The proxy applies it within about
+  10 seconds. The lists for newly ticked categories are downloaded in the
+  background, and the page confirms which. Refresh to watch the *Domains* and
+  *Updated* columns fill in. A ticked category that still says "not downloaded"
+  is not blocking anything yet.
+- **Unticking** stops the blocking; the downloaded list stays on disk.
+- If the page says the file is not writable, the service can't save. Use the
+  command it shows to fix the permissions (the package sets them correctly).
+
+Some categories are broad. `shopping`, `jobsearch`, `games`, `press`,
+`social_networks` and `update` block a lot of ordinary business traffic, and
+`update` can stop software updates. Turn on only what your policy needs, and
+use the allow-list for exceptions.
+
+---
+
+## The block page (what a blocked user sees)
+
+This is a separate small service (`cache-blockpage`, port 80 by default), not
+part of the admin UI: no login, plain HTTP, so it loads without a certificate
+warning. Its address is `[blockpage] url`.
+
+When a user opens a blocked site in a browser they are redirected to
+`http://<proxy>/blocked?t=<token>`, which shows:
+
+| Item | Example |
+|---|---|
+| Reason | Category not allowed: gambling |
+| Category | gambling |
+| Site and address | `casino.example` and the full URL requested |
+| Your IP address | `10.20.4.14` |
+| Date and time | `2026-09-22 09:41:07 BST` |
+| Browser | the browser string the request carried |
+
+Below that, if `[email]` is configured, is a form with an optional note and a
+**Send unblock request** button. The email to the administrator carries all of
+the above plus the note, and says which line to add to `allowed-hosts.conf`.
+
+What the page will and won't do:
+
+- **Opened directly** (`/`, `/blocked`, or a wrong or mistyped token) it shows
+  an empty template with no details and **no form**. A full page needs a token
+  created by a real block.
+- **Someone else's token** shows the same template: the page only reveals a
+  block, and offers the form, to the IP address that was blocked.
+- **One request per block.** After sending, the page says it has been sent.
+  If the email fails to send, the user is told to try again later (with no
+  technical detail) and can retry. Each IP address may send a limited number
+  per hour (`max_requests_per_ip_per_hour`, default 5).
+- **The email is built from the stored record**, not from the form, so a
+  browser can't put anything in it except the note (capped at 1000 characters).
+- Only **page loads** are redirected. Images, scripts, API calls, `apt`,
+  `curl` and older browsers get a plain `403` with the header
+  `X-Cache-Proxy: BLOCKED`, which is also on the redirect. Tools can use that
+  header to tell a proxy block from a real `403` at the origin.
+
+---
+
 ## JSON API
 
 Both endpoints need the same login as the pages and return JSON.
@@ -246,6 +367,10 @@ login): `POST /delete/{hash}` deletes one entry, `POST /purge-expired` purges
 expired entries, and `GET /download/{hash}` downloads a cached file. `{hash}`
 is the entry's identifier, visible in the download links.
 
+The new pages add `POST /categories` (save the category selection) and
+`POST /blocks/test-email` (send the test email); the block page service has
+its own `POST /unblock`, which needs no login.
+
 ---
 
 ## Security notes
@@ -259,5 +384,13 @@ is the entry's identifier, visible in the download links.
   in principle have a delete triggered. The damage is limited (cached files
   are re-fetched on demand), but it is another reason to keep the UI on a
   restricted network.
+- **Saving categories is protected against cross-site posts** (a request from
+  another site is refused), but the older delete and purge buttons still are
+  not. The block page is deliberately unauthenticated: it exposes only the
+  viewer's own block, behind a 128-bit token and a matching IP address.
+- The **Blocked** page and the `blocked` table show which clients tried to
+  reach which sites. That is personal data in most jurisdictions; decide who
+  may see it, how long you keep it (it is never pruned automatically) and
+  whether users must be told.
 - There is a single account. There are no roles, so anyone who can sign in
   can delete cache entries.
