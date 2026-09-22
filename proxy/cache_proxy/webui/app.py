@@ -103,7 +103,12 @@ def usage(request: Request, days: int = Query(default=7), client: Optional[str] 
 
 def _hourly(hours: int, client: Optional[str]):
     since_ts = time.time() - hours * 3600
-    return analytics.client_series(store.hourly_client_stats(since_ts=since_ts, client_ip=client))
+    return analytics.client_series(
+        analytics.merge_hourly(
+            store.hourly_client_stats(since_ts=since_ts, client_ip=client),
+            store.hourly_traffic(since_ts=since_ts, client_ip=client),
+        )
+    )
 
 
 @app.get("/api/hourly-stats")

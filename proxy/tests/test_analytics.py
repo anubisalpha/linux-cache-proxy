@@ -97,3 +97,67 @@ def test_hourly_client_stats_buckets_by_client_and_hour():
     assert by_key[("b", base)]["bytes"] == 7
     assert [r["client_ip"] for r in store.hourly_client_stats(client_ip="b")] == ["b"]
     assert store.hourly_client_stats(since_ts=base + HOUR) == [by_key[("a", base + HOUR)]]
+
+
+# --- merge_hourly: joining download stats with all-traffic volumes --------
+
+def _dl(ip, hour, requests=0, hits=0, nbytes=0, new_downloads=0):
+    return {"client_ip": ip, "hour": hour, "requests": requests, "hits": hits,
+            "bytes": nbytes, "new_downloads": new_downloads}
+
+
+def _tr(ip, hour, requests=0, nbytes=0):
+    return {"client_ip": ip, "hour": hour, "requests": requests, "bytes": nbytes}
+
+
+def test_merge_hourly_combines_both_sources_for_one_client_hour():
+    rows = analytics.merge_hourly(
+        [_dl("10.0.0.5", 3600, requests=2, hits=1, nbytes=500, new_downloads=1)],
+        [_tr("10.0.0.5", 3600, requests=40, nbytes=90000)],
+    )
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["requests"] == 2 and r["new_downloads"] == 1 and r["bytes"] == 500
+    assert r["total_requests"] == 40 and r["total_bytes"] == 90000
+
+
+def test_merge_hourly_keeps_a_client_that_only_browses():
+    """The whole point: access_log never sees a client that just browses, so
+    an inner join would drop it entirely."""
+    rows = analytics.merge_hourly([], [_tr("10.0.0.9", 3600, requests=598, nbytes=1234)])
+    assert len(rows) == 1
+    assert rows[0]["client_ip"] == "10.0.0.9"
+    assert rows[0]["total_requests"] == 598
+    assert rows[0]["requests"] == 0 and rows[0]["new_downloads"] == 0
+
+
+def test_merge_hourly_keeps_a_client_with_downloads_but_no_traffic_rows():
+    rows = analytics.merge_hourly([_dl("10.0.0.5", 3600, requests=3, nbytes=900)], [])
+    assert len(rows) == 1
+    assert rows[0]["requests"] == 3
+    assert rows[0]["total_requests"] == 0 and rows[0]["total_bytes"] == 0
+
+
+def test_merge_hourly_every_row_carries_every_metric():
+    rows = analytics.merge_hourly([_dl("a", 3600)], [_tr("b", 7200, requests=1)])
+    for r in rows:
+        for metric in analytics.METRICS:
+            assert metric in r, f"{metric} missing from merged row"
+
+
+def test_merge_hourly_sorted_by_client_then_hour():
+    rows = analytics.merge_hourly(
+        [_dl("10.0.0.9", 7200), _dl("10.0.0.5", 7200)],
+        [_tr("10.0.0.5", 3600, requests=1)],
+    )
+    assert [(r["client_ip"], r["hour"]) for r in rows] == [
+        ("10.0.0.5", 3600), ("10.0.0.5", 7200), ("10.0.0.9", 7200),
+    ]
+
+
+def test_summaries_expose_total_metrics():
+    rows = analytics.merge_hourly([], [_tr("10.0.0.9", 3600, requests=10, nbytes=100),
+                                       _tr("10.0.0.9", 7200, requests=30, nbytes=300)])
+    summaries = analytics.client_summaries(analytics.client_series(rows))
+    assert summaries[0]["latest_total_requests"] == 30
+    assert summaries[0]["avg_total_requests"] == 20

@@ -17,8 +17,8 @@
       <tr>
         <td><a href="/usage?client={{ a.client_ip }}">{{ a.client_ip }}</a></td>
         <td>{{ a.metric.replace('_', ' ') }}</td>
-        <td>{{ a.value | human_size if a.metric == 'bytes' else a.value }}</td>
-        <td>{{ a.baseline | human_size if a.metric == 'bytes' else a.baseline | round(1) }}</td>
+        <td>{{ a.value | human_size if a.metric.endswith('bytes') else a.value }}</td>
+        <td>{{ a.baseline | human_size if a.metric.endswith('bytes') else a.baseline | round(1) }}</td>
         <td>{{ a.ratio | round(1) }}&times;</td>
       </tr>
       {% else %}
@@ -28,27 +28,43 @@
   </table>
 
   <h2>Per-client summary</h2>
+  <p class="note">
+    <strong>All traffic</strong> is every response the proxy handled for that
+    client. <strong>Cacheable downloads</strong> is the subset that matched the
+    download rules &mdash; a client that only browses shows activity in the
+    first group and nothing in the second.
+    Byte totals are a floor: a response that is streamed and chunked declares
+    no length and is never buffered, so it counts as a request with no bytes.
+    Request counts are exact.
+  </p>
   <table>
     <thead>
       <tr>
-        <th>Client</th>
-        <th>Requests/hour (avg)</th><th>Requests (latest hour)</th>
-        <th>Bytes/hour (avg)</th><th>Bytes (latest hour)</th>
-        <th>New downloads/hour (avg)</th><th>New downloads (latest hour)</th>
-        <th>Latest hour</th>
+        <th rowspan="2">Client</th>
+        <th colspan="4">All traffic</th>
+        <th colspan="3">Cacheable downloads</th>
+        <th rowspan="2">Latest hour</th>
+      </tr>
+      <tr>
+        <th>Requests/hour (avg)</th><th>Requests (latest)</th>
+        <th>Bytes/hour (avg)</th><th>Bytes (latest)</th>
+        <th>Requests/hour (avg)</th><th>Bytes/hour (avg)</th>
+        <th>New downloads/hour (avg)</th>
       </tr>
     </thead>
     <tbody>
       {% for c in summaries %}
       <tr>
         <td><a href="/usage?client={{ c.client_ip }}">{{ c.client_ip }}</a></td>
-        <td>{{ c.avg_requests | round(1) }}</td><td>{{ c.latest_requests }}</td>
-        <td>{{ c.avg_bytes | human_size }}</td><td>{{ c.latest_bytes | human_size }}</td>
-        <td>{{ c.avg_new_downloads | round(1) }}</td><td>{{ c.latest_new_downloads }}</td>
+        <td>{{ c.avg_total_requests | round(1) }}</td><td>{{ c.latest_total_requests }}</td>
+        <td>{{ c.avg_total_bytes | human_size }}</td><td>{{ c.latest_total_bytes | human_size }}</td>
+        <td>{{ c.avg_requests | round(1) }}</td>
+        <td>{{ c.avg_bytes | human_size }}</td>
+        <td>{{ c.avg_new_downloads | round(1) }}</td>
         <td>{{ c.latest_hour | datetime }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="8">No activity recorded in this window.</td></tr>
+      <tr><td colspan="9">No activity recorded in this window.</td></tr>
       {% endfor %}
     </tbody>
   </table>
