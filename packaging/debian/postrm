@@ -21,7 +21,19 @@ if [ "$1" = "purge" ]; then
   # purge. Everything else -- cached files, the SQLite index, the
   # mitmproxy CA and webui TLS cert -- is real state, so it's removed
   # here explicitly rather than left behind as orphaned data.
-  rm -rf /var/lib/cache-proxy
+  # Clear the contents rather than the directory itself. /var/lib/cache-proxy
+  # is usually a dedicated mount point, and `rm -rf` on a mount point exits
+  # non-zero ("Device or resource busy") after emptying it -- which with
+  # `set -e` aborts the purge. A mounted ext4 filesystem also carries a
+  # lost+found that isn't ours to delete, and in an unprivileged container
+  # it belongs to a uid outside the container's map, so removing it fails
+  # regardless. rmdir then tidies up the plain-directory case and fails
+  # harmlessly when it really is a mount point.
+  if [ -d /var/lib/cache-proxy ]; then
+    find /var/lib/cache-proxy -mindepth 1 -maxdepth 1 \
+      ! -name lost+found -exec rm -rf {} + 2>/dev/null || true
+    rmdir /var/lib/cache-proxy 2>/dev/null || true
+  fi
   rm -f /etc/cache-proxy/webui-cert.pem /etc/cache-proxy/webui-key.pem
   rmdir /etc/cache-proxy 2>/dev/null || true
   if getent passwd cacheproxy >/dev/null; then
