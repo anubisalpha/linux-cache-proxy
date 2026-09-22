@@ -149,11 +149,21 @@ long the usage log is kept.
 | `anomaly_factor` | `3.0` | A client is flagged when its current hour is more than this many times its own average, on any of bytes, requests or new downloads. |
 | `min_history_hours` | `6` | A client needs at least this many earlier hours of history before it can be flagged, so a newcomer doesn't trip an alert on its first hour. |
 | `lookback_hours` | `168` | How far back the stats page and JSON API look by default (168 = one week). This is also the window used to compute each client's average. |
-| `retention_days` | `90` | Usage-log rows older than this are deleted daily. `0` keeps everything forever. Shorter retention also keeps the stats queries fast. |
+| `retention_days` | `90` | Rows older than this are deleted daily, from both the usage log and the hourly traffic meter. `0` keeps everything forever. Shorter retention also keeps the stats queries fast. |
 
-"Usage" here means what the usage log records: cache **hits** and newly
-**stored downloads**. It is not a record of all browsing. See
-[web interface](web-interface.md#stats-stats) for how to read the flags.
+Two different things are measured per client per hour, and the stats page
+shows both:
+
+- The **usage log** (`access_log`) records cache **hits** and newly **stored
+  downloads** only. It is not a record of all browsing.
+- The **traffic meter** (`hourly_traffic`) counts every response the proxy
+  handled — one row per client per hour holding a request count and a byte
+  total, and nothing else. No URL, no hostname. A client that only browses
+  appears here and nowhere else. Byte totals are a floor, because a streamed
+  chunked response declares no length and is never buffered; request counts
+  are exact.
+
+See [web interface](web-interface.md#stats-stats) for how to read the flags.
 
 ---
 

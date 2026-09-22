@@ -139,17 +139,39 @@ not the individual user's.
 Per-client usage by the hour, with unusual activity flagged. The default
 window is the last 168 hours (one week); `?hours=48` narrows it.
 
+**Two groups of figures, and they measure different things.**
+
+| Group | Source | What it covers |
+|---|---|---|
+| **All traffic** | `hourly_traffic` | Every response the proxy handled for that client |
+| **Cacheable downloads** | `access_log` | Only the subset that matched the download rules |
+
+A client that merely browses shows activity in the first group and nothing
+at all in the second — it never appears in `access_log`, because that table
+only records cache hits and newly stored downloads. Before the all-traffic
+figures existed, such a client was invisible on this page entirely.
+
+Byte totals under **All traffic** are a floor, not an exact total: a
+response that is both streamed and chunked declares no `Content-Length` and
+is never buffered, so there is nothing to measure and it counts as a request
+with no bytes. **Request counts are exact.**
+
 **How flagging works.** For each client, the page takes the client's own
 average per hour over its earlier history in the window (not counting the
 current hour) and compares it with the current hour. A
 client is flagged if the current hour is more than `anomaly_factor` times
-(default 3x) that average, on any of three measures:
+(default 3x) that average, on any of five measures:
 
 | Measure | What it counts |
 |---|---|
-| requests | Requests served (hits plus new downloads). |
-| bytes | Bytes served. |
+| total requests | Every response handled for the client. |
+| total bytes | Bytes across all of it (a floor, see above). |
+| requests | Cacheable-download requests served (hits plus new downloads). |
+| bytes | Bytes served for those. |
 | new downloads | Files the proxy had to fetch from the internet (misses). |
+
+The first two mean a client whose general browsing spikes is flagged even
+if it downloads nothing.
 
 Two safeguards keep it from crying wolf: each client is compared with
 **itself**, not with other clients, so a heavy user is not flagged for being
@@ -336,7 +358,8 @@ Query parameters (both optional): `hours` (window, default 168) and `client`
   "series": {
     "10.20.4.14": [
       { "client_ip": "10.20.4.14", "hour": 1789898400,
-        "requests": 3, "hits": 2, "bytes": 31457280, "new_downloads": 1 }
+        "requests": 3, "hits": 2, "bytes": 31457280, "new_downloads": 1,
+        "total_requests": 418, "total_bytes": 41496951 }
     ]
   },
   "anomalies": [
@@ -348,9 +371,14 @@ Query parameters (both optional): `hours` (window, default 168) and `client`
 
 - `hour` is the start of the hour as a Unix timestamp (seconds). Hours in
   which a client did nothing have no entry.
-- In each entry, `requests` = `hits` + `new_downloads`.
+- In each entry, `requests` = `hits` + `new_downloads`. Those three, and
+  `bytes`, count **cacheable downloads only**.
+- `total_requests` and `total_bytes` count **everything** the proxy handled
+  for that client, browsing included. A client that only browses has those
+  two set and the rest zero. `total_bytes` is a floor (see above).
 - `anomalies` holds only flags for the **current** hour, and is empty when
-  nothing is unusual. `metric` is one of `requests`, `bytes`, `new_downloads`.
+  nothing is unusual. `metric` is one of `requests`, `bytes`,
+  `new_downloads`, `total_requests`, `total_bytes`.
   `baseline` is the client's usual value per hour and `ratio` is `value` divided
   by `baseline`.
 

@@ -319,7 +319,7 @@ What is worth keeping, in order of importance:
 |---|---|---|
 | `/var/lib/cache-proxy/mitmproxy-ca/` | The certificate authority your clients trust. **If you lose it, every client needs a new CA installed.** | **Yes.** Protect the copy. |
 | `/etc/cache-proxy/` | `config.toml` (which holds the web UI password hash), the host lists, the filtering files (`allowed-hosts.conf` holds your approved unblocks; `filter-categories.conf` your category choices), `secrets.env` (SMTP password, URLhaus key) and the web UI TLS certificate and key. | **Yes.** Protect the copy: it contains secrets. |
-| `/var/lib/cache-proxy/index.db` | The usage history, the cache index and the **`blocked` table** (the audit trail of blocks and unblock requests, never pruned). | Yes if you want the history or the audit trail. |
+| `/var/lib/cache-proxy/index.db` | The usage history, the per-client hourly traffic meter, the cache index and the **`blocked` table** (the audit trail of blocks and unblock requests, never pruned). | Yes if you want the history or the audit trail. |
 | `/var/lib/cache-proxy/filter-lists/` | Downloaded block lists (about 225 MB by default). | No: the next refresh recreates them. |
 | `/var/lib/cache-proxy/files/` | The cached files themselves. | Usually **no**: they are refetched on demand. |
 | `/var/lib/cache-proxy/workers.json` | A live status snapshot. | No. |
@@ -439,6 +439,28 @@ Check the service is active and something is listening on 8080 (the `ss`
 command above). If a firewall sits in between, check it allows clients to
 reach 8080. A freshly started service takes a few seconds before workers are
 listening.
+
+### A busy client shows nothing on the Usage page
+
+`/usage` and the "cacheable downloads" figures on `/stats` come from
+`access_log`, which records **only** cache hits and newly stored downloads.
+A client that browses but never downloads anything matching the cacheable
+rules (minimum 1 MiB, an installer extension or content-type) has no rows
+there at all, however busy it is — one machine sitting idle put 600 requests
+an hour through the proxy and appeared on `/usage` as nothing.
+
+Look at the **all traffic** columns on `/stats` instead, which come from
+`hourly_traffic` and count every response. To confirm the proxy is seeing
+the client at all:
+
+```bash
+sudo journalctl -u cache-proxy --no-pager | grep <client-ip> | tail
+sudo -u cacheproxy sqlite3 /var/lib/cache-proxy/index.db   "SELECT client_ip, hour, requests, bytes FROM hourly_traffic
+   WHERE client_ip = '<client-ip>' ORDER BY hour DESC LIMIT 5;"
+```
+
+If the journal shows the client and `hourly_traffic` has rows, everything is
+working — the client simply isn't downloading anything cacheable.
 
 ### Everything shows the same client address
 

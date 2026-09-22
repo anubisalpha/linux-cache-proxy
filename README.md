@@ -48,14 +48,30 @@ This README is the overview. The detail is in `docs/`:
   that match the cacheable-download rules get logged, not every page a
   client visits (SSL-bump means the proxy technically sees everything; we
   deliberately don't record all of it).
+- **Traffic metering** (table `hourly_traffic`): because `access_log` only
+  sees cacheable downloads, a client that merely browses appears nowhere in
+  it — one machine idling put 600 requests through the proxy and showed up
+  as nothing at all. So every response is additionally tallied into one row
+  per client per hour: request count and bytes, and **nothing else**. No
+  URL, no hostname, nothing about where the traffic went. That keeps it a
+  traffic meter rather than a browsing history, and keeps it to a few
+  thousand rows a day for a whole site instead of millions. Byte totals are
+  a floor: a response that is both streamed and chunked declares no length
+  and is never buffered, so it counts as a request with no bytes. Request
+  counts are exact. Pruned on the same schedule and `retention_days` as
+  `access_log`.
 - **Web UI** (`cache_proxy/webui/`), FastAPI on port 443 (HTTPS,
   password-protected — see below):
   - `/` — cached files, search, download, delete
   - `/usage` — request/hit-rate summary, top clients by bytes served,
     most-requested files, recent activity log (filterable by client IP,
     windowed by 1/7/30 days or all-time)
-  - `/stats` — per-client hourly usage with anomaly flags (below); raw
-    series at `/api/hourly-stats` (JSON, for Grafana's JSON API datasource)
+  - `/stats` — per-client hourly figures with anomaly flags (below), in two
+    groups: **all traffic** (every response the proxy handled, from
+    `hourly_traffic`) and **cacheable downloads** (the subset `access_log`
+    records). A client that only browses shows activity in the first and
+    nothing in the second. Raw series at `/api/hourly-stats` (JSON, for
+    Grafana's JSON API datasource)
   - `/` also shows the worker pool (active/max workers, pool and
     per-worker CPU, connections), refreshed live from `/api/workers`
   - `/blocks` — recent blocks, unblock requests with the exact line to add to
@@ -102,15 +118,16 @@ This README is the overview. The detail is in `docs/`:
   `206 Partial Content`.
 - **Quota**: `max_size_gb` (0 = unlimited) evicts least-recently-hit
   entries once the cache exceeds it. The main page warns when the cache
-  volume is under 10% free. `access_log` rows older than `retention_days`
-  (90) are pruned daily.
+  volume is under 10% free. `access_log` and `hourly_traffic` rows older
+  than `retention_days` (90) are pruned daily.
 - **Usage alerting** (`cache_proxy/analytics.py`): `/stats` flags a client
   when its current hour exceeds `anomaly_factor` (3x) its own trailing
-  average on requests, bytes or new downloads, once it has
-  `min_history_hours` of history so a new client never trips on hour one.
-  "Usage" here means what `access_log` records — cache hits and newly
-  stored downloads — not all browsing. Flagging is on-screen/JSON only;
-  nothing is pushed anywhere yet.
+  average on any of its metrics, once it has `min_history_hours` of history
+  so a new client never trips on hour one. The metrics are the download
+  figures from `access_log` (requests, bytes, new downloads) **and** the
+  all-traffic figures from `hourly_traffic` (total requests, total bytes) —
+  so a client whose general browsing spikes is flagged even if it downloads
+  nothing. Flagging is on-screen/JSON only; nothing is pushed anywhere yet.
 
 ### Content filtering
 
