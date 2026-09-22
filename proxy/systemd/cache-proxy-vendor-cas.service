@@ -1,0 +1,13 @@
+[Unit]
+Description=Discover and trust vendor root/intermediate CAs for upstream TLS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cacheproxy
+Group=cacheproxy
+WorkingDirectory=/opt/cache-proxy
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=CACHE_PROXY_VENDOR_CA_DIR=/var/lib/cache-proxy/vendor-cas
+ExecStart=/opt/cache-proxy/venv-proxy/bin/python3 -m cache_proxy.vendorcas update

@@ -177,6 +177,27 @@ username = ""
 from_address = ""
 unblock_recipient = ""
 
+# Root/intermediate CAs mitmproxy should trust for the *upstream*
+# (real-server) TLS connection, on top of certifi's bundle -- for vendor
+# PKI hierarchies not in the public web root program. Windows Update is
+# the built-in example: its "Update Secure Server CA" chains root at
+# Microsoft's own CAs, which most Linux distros don't ship. A seed host's
+# whole chain is discovered from one TLS handshake (each cert's Authority
+# Information Access field points at the next one up) and cached in dir,
+# so a routine CA rotation upstream needs no config change -- add a
+# vendor here by adding one of its hostnames, not a certificate. Refreshed
+# daily by the cache-proxy-vendor-cas timer; run it once by hand after
+# install so the first clients aren't the ones finding a missing chain:
+#   sudo -u cacheproxy /opt/cache-proxy/venv-proxy/bin/python3 -m cache_proxy.vendorcas update
+[tls_trust]
+enabled = true
+dir = "/var/lib/cache-proxy/vendor-cas"
+seed_hosts = [
+    "fe2cr.update.microsoft.com",
+    "tas02.sls.update.microsoft.com",
+]
+max_chain_depth = 6
+
 [webui]
 port = 443
 

@@ -8,7 +8,7 @@ GROUP=cacheproxy
 # (cosmetic -- it works either order since --no-create-home is set, but
 # skips a spurious "home dir can't be accessed" warning at install time).
 mkdir -p /var/lib/cache-proxy/files /var/lib/cache-proxy/mitmproxy-ca \
-         /var/lib/cache-proxy/filter-lists
+         /var/lib/cache-proxy/filter-lists /var/lib/cache-proxy/vendor-cas
 
 if ! getent group "$GROUP" >/dev/null; then
   addgroup --system "$GROUP"
@@ -25,7 +25,7 @@ fi
 # unprivileged LXC container it is owned by a uid outside the container's
 # map, so the recursive chown failed outright and aborted the install.
 chown "$USER:$GROUP" /var/lib/cache-proxy
-for dir in files mitmproxy-ca filter-lists; do
+for dir in files mitmproxy-ca filter-lists vendor-cas; do
   chown -R "$USER:$GROUP" "/var/lib/cache-proxy/$dir"
 done
 
@@ -71,7 +71,7 @@ else
   # Fresh install: enable for boot, but do not auto-start -- this
   # intercepts all HTTPS traffic and the web UI has no password set yet.
   # Review config.toml and set a password before starting it.
-  systemctl enable cache-proxy.service cache-webui.service cache-blockpage.service cache-proxy-lists.timer cache-proxy-lists-hourly.timer || true
+  systemctl enable cache-proxy.service cache-webui.service cache-blockpage.service cache-proxy-lists.timer cache-proxy-lists-hourly.timer cache-proxy-vendor-cas.timer || true
   cat <<'EOF'
 
 cache-proxy installed but not started.
@@ -92,7 +92,12 @@ Optional content filtering (see docs/configuration.md, [filtering]):
        sudo -u cacheproxy /opt/cache-proxy/venv-proxy/bin/python3 -m cache_proxy.filterlists update
   - set [filtering] enabled = true
 
-Then:  sudo systemctl start cache-proxy cache-webui cache-blockpage cache-proxy-lists.timer cache-proxy-lists-hourly.timer
+Vendor root CAs for upstream TLS (see [tls_trust] in config.toml, docs/proxmox.md):
+  - the timer runs daily, but run it once now so the first clients aren't
+    the ones discovering a missing chain:
+       sudo -u cacheproxy /opt/cache-proxy/venv-proxy/bin/python3 -m cache_proxy.vendorcas update
+
+Then:  sudo systemctl start cache-proxy cache-webui cache-blockpage cache-proxy-lists.timer cache-proxy-lists-hourly.timer cache-proxy-vendor-cas.timer
 EOF
 fi
 

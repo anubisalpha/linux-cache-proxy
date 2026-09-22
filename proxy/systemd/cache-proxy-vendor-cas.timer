@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily refresh of trusted vendor root/intermediate CAs
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+# Run a missed refresh at next boot (e.g. the machine was off overnight).
+Persistent=true
+
+[Install]
+WantedBy=timers.target

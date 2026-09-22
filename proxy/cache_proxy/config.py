@@ -143,6 +143,19 @@ _DEFAULTS = {
             },
         ],
     },
+    # Root/intermediate CAs mitmproxy should trust for the *upstream*
+    # (real-server) TLS connection, beyond certifi's bundle -- for vendor
+    # PKI hierarchies not in the public web root program (Windows Update's
+    # is the first one found). See vendorcas.py.
+    "tls_trust": {
+        "enabled": True,
+        "dir": "/var/lib/cache-proxy/vendor-cas",
+        "seed_hosts": [
+            "fe2cr.update.microsoft.com",
+            "tas02.sls.update.microsoft.com",
+        ],
+        "max_chain_depth": 6,
+    },
     # The page blocked users are sent to (a separate small service).
     "blockpage": {
         "url": "",  # e.g. "http://cache-proxy.example.lan"; empty = inline 403 page
@@ -259,6 +272,11 @@ def block_categories() -> list:
     except OSError:
         return list(FILTER_BLOCK_CATEGORIES)
 FILTER_SOURCES = list(_cfg["filtering"]["sources"])
+
+TLS_TRUST_ENABLED = os.environ.get("CACHE_PROXY_TLS_TRUST", str(_cfg["tls_trust"]["enabled"])).lower() in ("1", "true", "yes")
+VENDOR_CA_DIR = Path(os.environ.get("CACHE_PROXY_VENDOR_CA_DIR", _cfg["tls_trust"]["dir"]))
+VENDOR_CA_SEED_HOSTS = list(_cfg["tls_trust"]["seed_hosts"])
+VENDOR_CA_MAX_DEPTH = int(_cfg["tls_trust"]["max_chain_depth"])
 
 BLOCKPAGE_URL = os.environ.get("CACHE_PROXY_BLOCKPAGE_URL", _cfg["blockpage"]["url"]).rstrip("/")
 BLOCKPAGE_PORT = int(os.environ.get("CACHE_PROXY_BLOCKPAGE_PORT", _cfg["blockpage"]["port"]))
