@@ -30,6 +30,7 @@ This README is the overview. The detail is in `docs/`:
 | [Configuration reference](docs/configuration.md) | Every `config.toml` setting with defaults and guidance, the host exclusion lists, **content filtering** (list sources and refresh schedule, choosing categories, the block page, unblock-request email, the `blocked` table), settings that live outside the config file, environment variable overrides |
 | [Web interface](docs/web-interface.md) | A tour of each admin page (files, usage and stats with screenshots; blocked and categories described), the page blocked users see, the shared menu, how to read the stats page and its flags, the JSON API, security notes |
 | [Operations](docs/operations.md) | Services, timers and logs, checking caching and filtering work, sizing, network and security, upgrading, backup and restore, troubleshooting, removal |
+| [Deploying on Proxmox](docs/proxmox.md) | Container vs VM, the two settings you must change in a container, storage and the dedicated cache volume, egress requirements, firewall options, the port 80 clash with nginx, proxy settings that systemd does not inherit, and the caveats that catch people out |
 
 ## 1. General download cache (`proxy/`)
 
@@ -387,6 +388,7 @@ docs/
   configuration.md         # every config.toml setting, host lists, env overrides
   web-interface.md         # tour of the web UI, stats flagging, JSON API
   operations.md            # logs, sizing, security, upgrade, backup, troubleshooting
+  proxmox.md               # Proxmox VE: container vs VM, storage, egress, caveats
   images/                  # screenshots used by the docs (demo data)
 proxy/
   requirements-proxy.txt   # mitmproxy + pytest
