@@ -314,6 +314,12 @@ def host_to_regex(pattern: str) -> str:
     """Convert a "example.com" / "*.example.com" host pattern into an
     anchored regex matching the bare host or any subdomain -- for handing
     to mitmproxy's ignore_hosts option, which takes regexes rather than
-    the simple patterns host_matches() understands."""
+    the simple patterns host_matches() understands.
+
+    The trailing port is optional because mitmproxy matches ignore_hosts
+    against "host:port", not the bare hostname. Without it the anchor
+    never matches a real request and the whole never-intercept list is
+    silently ignored for HTTPS -- which is the only traffic it exists
+    for."""
     p = pattern.lower().lstrip("*.").rstrip(".")
-    return rf"(^|\.){re.escape(p)}$"
+    return rf"(^|\.){re.escape(p)}(:\d+)?$"

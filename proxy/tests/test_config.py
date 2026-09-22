@@ -49,6 +49,21 @@ def test_host_to_regex_matches_bare_and_subdomain():
     assert not re.search(pattern, "example.com.evil.com")
 
 
+def test_host_to_regex_matches_host_with_port():
+    """mitmproxy matches ignore_hosts against "host:port", not the bare
+    hostname. Anchoring on the hostname alone means the pattern never
+    matches a real request and never-intercept-hosts.conf is silently
+    ignored for HTTPS -- the only traffic it exists for."""
+    import re
+    pattern = config.host_to_regex("example.com")
+    assert re.search(pattern, "example.com:443")
+    assert re.search(pattern, "download.example.com:443")
+    assert re.search(pattern, "example.com:8443")
+    # the port must not become a way past the anchor
+    assert not re.search(pattern, "example.com.evil.com:443")
+    assert not re.search(pattern, "evil-example.com:443")
+
+
 def test_host_to_regex_strips_wildcard_prefix():
     import re
     pattern = config.host_to_regex("*.example.com")
