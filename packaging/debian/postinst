@@ -7,7 +7,8 @@ GROUP=cacheproxy
 # Created before the user, so adduser's --home reference actually exists
 # (cosmetic -- it works either order since --no-create-home is set, but
 # skips a spurious "home dir can't be accessed" warning at install time).
-mkdir -p /var/lib/cache-proxy/files /var/lib/cache-proxy/mitmproxy-ca
+mkdir -p /var/lib/cache-proxy/files /var/lib/cache-proxy/mitmproxy-ca \
+         /var/lib/cache-proxy/filter-lists
 
 if ! getent group "$GROUP" >/dev/null; then
   addgroup --system "$GROUP"
@@ -17,7 +18,16 @@ if ! getent passwd "$USER" >/dev/null; then
     --shell /usr/sbin/nologin "$USER"
 fi
 
-chown -R "$USER:$GROUP" /var/lib/cache-proxy
+# Own the data directory and the subdirectories this package creates --
+# deliberately not a recursive chown of /var/lib/cache-proxy itself.
+# That path is usually a dedicated mount point, and a mounted filesystem
+# carries a lost+found this package has no business touching. In an
+# unprivileged LXC container it is owned by a uid outside the container's
+# map, so the recursive chown failed outright and aborted the install.
+chown "$USER:$GROUP" /var/lib/cache-proxy
+for dir in files mitmproxy-ca filter-lists; do
+  chown -R "$USER:$GROUP" "/var/lib/cache-proxy/$dir"
+done
 
 # Self-signed webui TLS cert -- generated once, left alone on upgrades.
 # Browsers will warn on first visit; replace with a real cert from your
@@ -50,9 +60,6 @@ chmod 664 /etc/cache-proxy/filter-categories.conf
 # Secrets (SMTP password, URLhaus key): root + service group only.
 chown root:"$GROUP" /etc/cache-proxy/secrets.env
 chmod 640 /etc/cache-proxy/secrets.env
-
-mkdir -p /var/lib/cache-proxy/filter-lists
-chown "$USER:$GROUP" /var/lib/cache-proxy/filter-lists
 
 systemctl daemon-reload || true
 
