@@ -141,3 +141,78 @@ def test_ordinary_host_still_caches_when_exclusion_list_nonempty(tmp_path, monke
 
     a.response(flow)
     assert len(store.list_entries()) == 1
+
+# --- hourly traffic metering ----------------------------------------------
+# _bump_hourly() meters every response, including the streamed ones that
+# access_log never sees. It must never raise: metering may not break a
+# response.
+
+def _hourly_addon():
+    a = addon.CacheAddon.__new__(addon.CacheAddon)
+    a._hourly = {}
+    return a
+
+
+def _resp(headers=None, content=b"", stream=False):
+    r = MagicMock()
+    r.headers = headers or {}
+    r.content = content
+    r.stream = stream
+    return r
+
+
+def test_bump_hourly_uses_content_length():
+    a = _hourly_addon()
+    flow = _fake_flow("https://example.com/x")
+    flow.response = _resp({"content-length": "1234"})
+
+    a._bump_hourly(flow)
+    (ip, _hour), tally = next(iter(a._hourly.items()))
+    assert ip == "10.0.0.5"
+    assert tally == [1, 1234]
+
+
+def test_bump_hourly_falls_back_to_buffered_body():
+    a = _hourly_addon()
+    flow = _fake_flow("https://example.com/x")
+    flow.response = _resp({}, content=b"abcde", stream=False)
+
+    a._bump_hourly(flow)
+    assert next(iter(a._hourly.values())) == [1, 5]
+
+
+def test_bump_hourly_does_not_read_the_body_of_a_streamed_response():
+    """A streamed response was never buffered; reading .content can raise.
+    The request must still be counted, with zero bytes rather than a guess."""
+    a = _hourly_addon()
+    flow = _fake_flow("https://example.com/x")
+    resp = MagicMock()
+    resp.headers = {}
+    resp.stream = True
+    type(resp).content = property(lambda self: (_ for _ in ()).throw(ValueError("streamed")))
+    flow.response = resp
+
+    a._bump_hourly(flow)  # must not raise
+    assert next(iter(a._hourly.values())) == [1, 0]
+
+
+def test_bump_hourly_swallows_unexpected_errors():
+    a = _hourly_addon()
+    flow = _fake_flow("https://example.com/x")
+    resp = MagicMock()
+    type(resp).headers = property(lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+    flow.response = resp
+
+    a._bump_hourly(flow)  # must not raise
+    assert a._hourly == {}
+
+
+def test_bump_hourly_sums_within_the_same_hour():
+    a = _hourly_addon()
+    for n in ("100", "250"):
+        flow = _fake_flow("https://example.com/x")
+        flow.response = _resp({"content-length": n})
+        a._bump_hourly(flow)
+
+    assert len(a._hourly) == 1
+    assert next(iter(a._hourly.values())) == [2, 350]

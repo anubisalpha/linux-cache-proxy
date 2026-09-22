@@ -51,6 +51,21 @@ CREATE TABLE IF NOT EXISTS counters (
     name TEXT PRIMARY KEY,
     value INTEGER NOT NULL DEFAULT 0
 );
+-- How much each client moved through the proxy, per hour. Deliberately
+-- volumes only -- no URLs, no hostnames -- so this stays a traffic meter
+-- rather than a browsing history. access_log answers "which downloads";
+-- this answers "how much did each client shift", which access_log cannot,
+-- because it only ever sees cacheable downloads and hits.
+--
+-- One row per client per hour: a few thousand rows a day for a whole site,
+-- versus millions if every request were logged.
+CREATE TABLE IF NOT EXISTS hourly_traffic (
+    client_ip TEXT NOT NULL,
+    hour INTEGER NOT NULL,          -- unix ts truncated to the hour
+    requests INTEGER NOT NULL DEFAULT 0,
+    bytes INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (client_ip, hour)
+);
 -- Every request the content filter blocked. Deliberately never pruned (unlike
 -- access_log): it is the audit trail for what was blocked and who asked why.
 CREATE TABLE IF NOT EXISTS blocked (
@@ -459,6 +474,56 @@ def add_counters(deltas: dict) -> None:
 def get_counters() -> dict:
     with _connect() as conn:
         return {r["name"]: r["value"] for r in conn.execute("SELECT name, value FROM counters")}
+
+
+def add_hourly_traffic(deltas: dict) -> None:
+    """Add to the per-client, per-hour traffic tallies.
+
+    `deltas` is {(client_ip, hour): (requests, bytes)}, accumulated in
+    memory by each worker and flushed in batches on the same cycle as
+    add_counters(). The upsert adds rather than replaces, so several
+    workers flushing the same client-hour sum correctly instead of
+    clobbering each other."""
+    if not deltas:
+        return
+    with _connect() as conn:
+        for (client_ip, hour), (requests, nbytes) in deltas.items():
+            conn.execute(
+                "INSERT INTO hourly_traffic (client_ip, hour, requests, bytes) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(client_ip, hour) DO UPDATE SET "
+                "requests = requests + excluded.requests, bytes = bytes + excluded.bytes",
+                (client_ip, int(hour), int(requests), int(nbytes)),
+            )
+
+
+def hourly_traffic(since_ts: Optional[float] = None, client_ip: Optional[str] = None):
+    """Per-client, per-hour request counts and bytes for *all* traffic --
+    not just the cacheable downloads access_log records."""
+    query = "SELECT client_ip, hour, requests, bytes FROM hourly_traffic"
+    where = []
+    params: list = []
+    if since_ts:
+        where.append("hour >= ?")
+        params.append(int(since_ts) // 3600 * 3600)
+    if client_ip:
+        where.append("client_ip = ?")
+        params.append(client_ip)
+    if where:
+        query += " WHERE " + " AND ".join(where)
+    query += " ORDER BY client_ip, hour"
+    with _connect() as conn:
+        return [dict(r) for r in conn.execute(query, params).fetchall()]
+
+
+def prune_hourly_traffic(retention_days: Optional[int] = None) -> int:
+    """Drop hourly_traffic rows older than the retention window, on the same
+    schedule and setting as access_log (0 = keep all)."""
+    days = config.RETENTION_DAYS if retention_days is None else retention_days
+    if not days:
+        return 0
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM hourly_traffic WHERE hour < ?", (time.time() - days * 86400,))
+        return cur.rowcount
 
 
 def hourly_client_stats(since_ts: Optional[float] = None, client_ip: Optional[str] = None):

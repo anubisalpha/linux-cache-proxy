@@ -170,6 +170,7 @@ class CacheAddon:
         self._known_hashes: set = set()
         self._counters: dict = {}
         self._asset_hits: dict = {}  # url_hash -> hits not yet written to the DB
+        self._hourly: dict = {}  # (client_ip, hour) -> [requests, bytes], see _bump_hourly
         # flow.id -> (lock fd, taken at): fetches this worker is leading.
         self._leading: dict = {}
         self._filter = contentfilter.ContentFilter() if config.FILTERING_ENABLED else None
@@ -200,11 +201,11 @@ class CacheAddon:
                 self._known_hashes = await loop.run_in_executor(None, store.known_hashes)
                 if self._filter:
                     await loop.run_in_executor(None, self._filter.reload_if_changed)
-                counters, asset_hits = self._take_stats()
+                counters, asset_hits, hourly = self._take_stats()
                 try:
-                    await loop.run_in_executor(None, self._write_stats, counters, asset_hits)
+                    await loop.run_in_executor(None, self._write_stats, counters, asset_hits, hourly)
                 except Exception:
-                    self._restore_stats(counters, asset_hits)
+                    self._restore_stats(counters, asset_hits, hourly)
                     raise
                 await loop.run_in_executor(None, self._flush_blocks)
                 # Safety net: never let a leader that somehow missed every
@@ -223,25 +224,31 @@ class CacheAddon:
     def _take_stats(self):
         counters, self._counters = self._counters, {}
         asset_hits, self._asset_hits = self._asset_hits, {}
-        return counters, asset_hits
+        hourly, self._hourly = self._hourly, {}
+        return counters, asset_hits, hourly
 
     @staticmethod
-    def _write_stats(counters: dict, asset_hits: dict) -> None:
+    def _write_stats(counters: dict, asset_hits: dict, hourly: dict) -> None:
         store.add_counters(counters)
         store.record_hits(asset_hits)
+        store.add_hourly_traffic(hourly)
 
-    def _restore_stats(self, counters: dict, asset_hits: dict) -> None:
+    def _restore_stats(self, counters: dict, asset_hits: dict, hourly: dict) -> None:
         for k, v in counters.items():
             self._counters[k] = self._counters.get(k, 0) + v
         for k, v in asset_hits.items():
             self._asset_hits[k] = self._asset_hits.get(k, 0) + v
+        for k, (req, nbytes) in hourly.items():
+            cur = self._hourly.setdefault(k, [0, 0])
+            cur[0] += req
+            cur[1] += nbytes
 
     def _flush_stats(self) -> None:
-        counters, asset_hits = self._take_stats()
+        counters, asset_hits, hourly = self._take_stats()
         try:
-            self._write_stats(counters, asset_hits)
+            self._write_stats(counters, asset_hits, hourly)
         except Exception:
-            self._restore_stats(counters, asset_hits)
+            self._restore_stats(counters, asset_hits, hourly)
             raise
 
     def _flush_blocks(self) -> None:
@@ -261,6 +268,42 @@ class CacheAddon:
 
     def _count(self, name: str, n: int = 1) -> None:
         self._counters[name] = self._counters.get(name, 0) + n
+
+    def _bump_hourly(self, flow: http.HTTPFlow) -> None:
+        """Tally one response against its client's current hour.
+
+        This counts *everything* the proxy handles, which access_log
+        deliberately does not -- that only records cacheable downloads and
+        hits, so a client that merely browses never appears in it at all.
+        Volumes only: no URL, no hostname, nothing about where the traffic
+        went.
+
+        Request counts are exact. Byte counts are Content-Length where the
+        origin gave one, and the buffered body otherwise. A response that
+        is both streamed and chunked has neither -- we never held its body
+        and nobody declared its length -- so it counts as a request with
+        zero bytes rather than a guess. Most traffic here is streamed (see
+        responseheaders), so treat bytes as a floor, not a total.
+
+        Never raises: a metering failure must not break the response."""
+        try:
+            resp = flow.response
+            if resp is None:
+                return
+            size = 0
+            cl = resp.headers.get("content-length")
+            if cl and cl.isdigit():
+                size = int(cl)
+            elif not getattr(resp, "stream", False):
+                # Only touch the body when we actually buffered it --
+                # reading .content on a streamed response can raise.
+                size = len(resp.content or b"")
+            key = (_client_ip(flow), int(time.time()) // 3600 * 3600)
+            cur = self._hourly.setdefault(key, [0, 0])
+            cur[0] += 1
+            cur[1] += size
+        except Exception as e:
+            logger.debug("hourly traffic tally skipped: %s", e)
 
     # ---- request coalescing ------------------------------------------------
     #
@@ -487,6 +530,7 @@ class CacheAddon:
 
     def response(self, flow: http.HTTPFlow) -> None:
         try:
+            self._bump_hourly(flow)
             self._store_response(flow)
         finally:
             self._release(flow.id)

@@ -256,6 +256,9 @@ class Supervisor:
                 pruned = store.prune_access_log()
                 if pruned:
                     print(f"supervisor: pruned {pruned} old access-log rows", flush=True)
+                pruned = store.prune_hourly_traffic()
+                if pruned:
+                    print(f"supervisor: pruned {pruned} old hourly-traffic rows", flush=True)
             except Exception as e:
                 print(f"supervisor: access-log prune failed: {e}", flush=True)
 

@@ -92,3 +92,70 @@ def test_access_summary_since_ts_filters_old_rows():
     future_cutoff = time.time() + 3600
     summary = store.access_summary(since_ts=future_cutoff)
     assert summary["requests"] == 0
+
+
+# --- hourly_traffic: per-client, per-hour volumes for all traffic ----------
+# access_log only ever sees cacheable downloads and hits, so a client that
+# merely browses never appears in it. hourly_traffic is the meter that does
+# see that traffic -- volumes only, no URLs.
+
+def _hour(ts=None):
+    return int(ts or time.time()) // 3600 * 3600
+
+
+def test_hourly_traffic_accumulates_rather_than_replacing():
+    """Several workers flush the same client-hour independently; the upsert
+    has to add, not overwrite, or all but the last worker's traffic is lost."""
+    h = _hour()
+    store.add_hourly_traffic({("10.0.0.5", h): (3, 1500)})
+    store.add_hourly_traffic({("10.0.0.5", h): (2, 500)})
+
+    rows = store.hourly_traffic(client_ip="10.0.0.5")
+    assert len(rows) == 1
+    assert rows[0]["requests"] == 5
+    assert rows[0]["bytes"] == 2000
+
+
+def test_hourly_traffic_separates_clients_and_hours():
+    h = _hour()
+    prev = h - 3600
+    store.add_hourly_traffic({
+        ("10.0.0.5", h): (1, 100),
+        ("10.0.0.9", h): (2, 200),
+        ("10.0.0.5", prev): (4, 400),
+    })
+
+    rows = {(r["client_ip"], r["hour"]): r for r in store.hourly_traffic()}
+    assert rows[("10.0.0.5", h)]["bytes"] == 100
+    assert rows[("10.0.0.9", h)]["requests"] == 2
+    assert rows[("10.0.0.5", prev)]["requests"] == 4
+
+
+def test_hourly_traffic_since_ts_filters_older_hours():
+    h = _hour()
+    store.add_hourly_traffic({("10.0.0.5", h - 7200): (9, 900), ("10.0.0.5", h): (1, 100)})
+    rows = store.hourly_traffic(since_ts=h)
+    assert len(rows) == 1
+    assert rows[0]["requests"] == 1
+
+
+def test_add_hourly_traffic_ignores_empty():
+    store.add_hourly_traffic({})
+    assert store.hourly_traffic() == []
+
+
+def test_prune_hourly_traffic_drops_old_rows_only():
+    h = _hour()
+    old = h - 100 * 86400
+    store.add_hourly_traffic({("10.0.0.5", old): (1, 10), ("10.0.0.5", h): (1, 10)})
+
+    removed = store.prune_hourly_traffic(retention_days=90)
+    assert removed == 1
+    rows = store.hourly_traffic()
+    assert len(rows) == 1 and rows[0]["hour"] == h
+
+
+def test_prune_hourly_traffic_zero_retention_keeps_everything():
+    store.add_hourly_traffic({("10.0.0.5", _hour() - 100 * 86400): (1, 10)})
+    assert store.prune_hourly_traffic(retention_days=0) == 0
+    assert len(store.hourly_traffic()) == 1
