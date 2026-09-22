@@ -321,6 +321,18 @@ Nginx reverse-proxy with `proxy_cache`, for Rocky/AlmaLinux/Fedora mirrors
 
 ```bash
 sudo apt-get install nginx   # or: dnf install nginx
+
+# Nginx only creates the last level of proxy_cache_path, so the parent
+# has to exist first -- otherwise `nginx -t` fails with
+# mkdir() "/var/cache/nginx/rpm-cache" failed (2: No such file or directory)
+sudo mkdir -p /var/cache/nginx/rpm-cache
+sudo chown -R www-data:www-data /var/cache/nginx   # nginx:nginx on RPM distros
+
+# On Debian/Ubuntu, nginx ships a default site on port 80. If cache-proxy
+# is on the same host its block page already owns that port, and nginx
+# will fail to start with "bind() to 0.0.0.0:80 failed".
+sudo rm -f /etc/nginx/sites-enabled/default
+
 sudo cp rpm-cache/nginx-rpm-cache.conf /etc/nginx/conf.d/rpm-cache.conf
 sudo nginx -t && sudo systemctl reload nginx
 ```
