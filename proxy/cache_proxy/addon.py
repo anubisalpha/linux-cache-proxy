@@ -77,7 +77,14 @@ class LocalFileServer:
     """Tiny HTTP server on loopback that streams cache files with Range
     support. mitmproxy can't stream a response body from a request hook, so
     for big or ranged hits the addon re-points the flow here and lets
-    mitmproxy stream the (X-Cache-Proxy: HIT) response through."""
+    mitmproxy stream the (x-cache-proxy: HIT) response through.
+
+    Header names we set are spelled lowercase throughout: HTTP/2 forbids
+    uppercase in field names, and setting "X-Cache-Proxy" on an HTTP/2
+    response makes mitmproxy rewrite it and log a warning for every
+    response it touches. Header lookup is case-insensitive either way, so
+    nothing downstream cares -- but the log noise is real (~300 lines in
+    a few hours of one client browsing)."""
 
     def __init__(self, token: str):
         self.token = token
@@ -123,7 +130,7 @@ class LocalFileServer:
             out = {
                 "Content-Type": headers.get("x-cache-content-type") or "application/octet-stream",
                 "Accept-Ranges": "bytes",
-                "X-Cache-Proxy": "HIT",
+                "x-cache-proxy": "HIT",
                 "Connection": "close",
             }
             if rng == "invalid":
@@ -327,9 +334,9 @@ class CacheAddon:
             "category": verdict.category, "source": verdict.source, "reason": verdict.reason,
             "user_agent": req.headers.get("User-Agent", "")[:512],
         }
-        headers = {"X-Cache-Proxy": "BLOCKED", "Cache-Control": "no-store"}
+        headers = {"x-cache-proxy": "BLOCKED", "Cache-Control": "no-store"}
         if verdict.category:
-            headers["X-Block-Category"] = verdict.category
+            headers["x-block-category"] = verdict.category
         page_load = req.method == "GET" and req.headers.get("Sec-Fetch-Dest", "").lower() == "document"
         if config.BLOCKPAGE_URL and page_load:
             store.record_blocks([row])  # now: the block page reads it back by token
@@ -435,7 +442,7 @@ class CacheAddon:
             {
                 "Content-Type": entry["content_type"] or "application/octet-stream",
                 "Accept-Ranges": "bytes",
-                "X-Cache-Proxy": "HIT",
+                "x-cache-proxy": "HIT",
             },
         )
         return True
@@ -463,7 +470,7 @@ class CacheAddon:
         if flow.response is None or flow.request.method != "GET":
             self._release(flow.id)
             return
-        if flow.response.headers.get("X-Cache-Proxy") == "HIT":
+        if flow.response.headers.get("x-cache-proxy") == "HIT":
             flow.response.stream = True  # from the loopback file server
             self._release(flow.id)
             return
@@ -487,7 +494,7 @@ class CacheAddon:
     def _store_response(self, flow: http.HTTPFlow) -> None:
         if flow.response is None or flow.request.method != "GET":
             return
-        if flow.response.headers.get("X-Cache-Proxy") == "HIT":
+        if flow.response.headers.get("x-cache-proxy") == "HIT":
             return
         if flow.response.status_code != 200:
             return
@@ -517,7 +524,7 @@ class CacheAddon:
         store.save_file(url, filename, content_type, data, kind=kind, ttl=ttl)
         h = store.url_hash(url)
         self._known_hashes.add(h)
-        flow.response.headers["X-Cache-Proxy"] = "MISS-STORED"
+        flow.response.headers["x-cache-proxy"] = "MISS-STORED"
         if kind == "asset":
             self._count("asset_misses")
         else:
