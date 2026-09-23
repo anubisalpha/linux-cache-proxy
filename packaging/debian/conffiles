@@ -6,3 +6,4 @@
 /etc/cache-proxy/blocked-url-patterns.conf
 /etc/cache-proxy/secrets.env
 /etc/cache-proxy/filter-categories.conf
+/etc/cache-proxy/vendor-ca-extra-seed-hosts.conf

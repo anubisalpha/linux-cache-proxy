@@ -12,6 +12,8 @@ import threading
 import time
 from urllib.parse import urlencode, urlsplit
 
+import subprocess
+
 from .. import analytics, categories, config, filterlists, mailer, store, workers
 from .auth import require_auth
 
@@ -314,3 +316,142 @@ async def categories_save(request: Request):
     if len(queued) < len(missing):
         msg += " Other lists are already downloading."
     return _redirect_categories(msg, ok=True)
+
+
+# ---- Certificates --------------------------------------------------------
+#
+# Deliberately shells out to the proxy venv's python (config.VENDORCAS_PYTHON)
+# to run vendorcas.py, rather than importing it: vendorcas.py needs
+# `cryptography`, a proxy-venv-only dependency the web UI's own venv
+# (cache-webui.service uses venv-webui, not venv-proxy) doesn't install.
+# Same reasoning for using the `openssl` CLI for the fingerprint below
+# instead of parsing the cert with `cryptography` in-process.
+
+_vendorca_lock = threading.Lock()
+_vendorca_in_flight: set = set()  # hosts queued or fetching, guarded by _vendorca_lock_state
+_vendorca_lock_state = threading.Lock()
+
+
+def _fetch_in_background(hosts: list) -> list:
+    """Fetch vendor CA chains for these hosts without holding up the
+    request, same pattern as the Categories page's list downloads. A host
+    already queued or fetching is skipped. Returns the ones actually
+    queued."""
+    with _vendorca_lock_state:
+        hosts = [h for h in hosts if h not in _vendorca_in_flight]
+        _vendorca_in_flight.update(hosts)
+    if not hosts:
+        return []
+
+    def run():
+        with _vendorca_lock:
+            try:
+                cmd = [str(config.VENDORCAS_PYTHON), "-m", "cache_proxy.vendorcas", "update"]
+                for h in hosts:
+                    cmd += ["--host", h]
+                subprocess.run(cmd, check=False, capture_output=True, timeout=120)
+            except Exception:
+                logging.getLogger("cache_proxy.webui").exception("vendor CA fetch failed")
+            finally:
+                with _vendorca_lock_state:
+                    _vendorca_in_flight.difference_update(hosts)
+    threading.Thread(target=run, daemon=True).start()
+    return hosts
+
+
+def _vendorca_status() -> dict:
+    """Same file cache_proxy.vendorcas.read_status() reads -- duplicated
+    here rather than imported, to keep this module free of the
+    cryptography dependency (see the section comment above)."""
+    try:
+        import json
+        return json.loads((config.VENDOR_CA_DIR / "status.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _ca_cert_fingerprint() -> Optional[str]:
+    if not config.CA_CERT_FILE.exists():
+        return None
+    try:
+        out = subprocess.run(
+            ["openssl", "x509", "-in", str(config.CA_CERT_FILE), "-noout", "-fingerprint", "-sha256"],
+            check=True, capture_output=True, text=True, timeout=10,
+        ).stdout
+        # "sha256 Fingerprint=AB:CD:...\n" -> just the hex part
+        return out.split("=", 1)[1].strip() if "=" in out else None
+    except Exception:
+        return None
+
+
+@app.get("/certs", response_class=HTMLResponse)
+def certs_page(request: Request, msg: str = Query(default=""), ok: int = Query(default=0)):
+    status = _vendorca_status()
+    hosts = config.vendor_ca_seed_hosts()
+    rows = [
+        {
+            "host": h,
+            "from_config": h in config.VENDOR_CA_SEED_HOSTS,
+            "in_flight": h in _vendorca_in_flight,
+            **status.get(h, {}),
+        }
+        for h in hosts
+    ]
+    return templates.TemplateResponse(
+        request,
+        "certs.html",
+        {
+            "ca_cert_exists": config.CA_CERT_FILE.exists(),
+            "ca_cert_file": config.CA_CERT_FILE,
+            "ca_fingerprint": _ca_cert_fingerprint(),
+            "tls_trust_enabled": config.TLS_TRUST_ENABLED,
+            "rows": rows,
+            "msg": msg,
+            "ok": bool(ok),
+            "active": "certs",
+        },
+    )
+
+
+def _redirect_certs(msg: str, ok: bool = False) -> RedirectResponse:
+    return RedirectResponse("/certs?" + urlencode({"msg": msg, "ok": int(ok)}), status_code=303)
+
+
+@app.get("/ca-cert")
+def ca_cert_download():
+    if not config.CA_CERT_FILE.exists():
+        return _redirect_certs(f"{config.CA_CERT_FILE} doesn't exist yet -- the proxy generates it on first run.")
+    return FileResponse(
+        config.CA_CERT_FILE,
+        filename="cache-proxy-ca.cer",
+        media_type="application/x-x509-ca-cert",
+    )
+
+
+@app.post("/certs/add")
+async def certs_add(request: Request):
+    origin = request.headers.get("origin")
+    if origin and urlsplit(origin).netloc != request.headers.get("host", ""):
+        return JSONResponse({"detail": "cross-site request refused"}, status_code=403)
+    form = await request.form()
+    host = (form.get("host") or "").strip().lower()
+    if not host:
+        return _redirect_certs("Enter a hostname to add.")
+    if not config.valid_hostname(host):
+        return _redirect_certs(f'"{host}" doesn\'t look like a valid hostname.')
+    added = config.add_vendor_ca_seed_host(host)
+    queued = _fetch_in_background([host])
+    msg = f"{host} added." if added else f"{host} was already known."
+    if queued:
+        msg += " Fetching its certificate chain now -- refresh in a few seconds."
+    else:
+        msg += " A fetch for it is already in progress."
+    return _redirect_certs(msg, ok=True)
+
+
+@app.post("/certs/refresh/{host}")
+def certs_refresh(host: str):
+    queued = _fetch_in_background([host])
+    msg = f"Refreshing {host} now -- refresh this page in a few seconds." if queued \
+        else f"{host} is already being fetched."
+    return _redirect_certs(msg, ok=True)

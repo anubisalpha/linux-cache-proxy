@@ -195,7 +195,7 @@ def _write_status(results: list) -> None:
 
 
 def update_all(hosts: Optional[list] = None) -> list:
-    hosts = list(hosts) if hosts is not None else list(config.VENDOR_CA_SEED_HOSTS)
+    hosts = list(hosts) if hosts is not None else config.vendor_ca_seed_hosts()
     dir_ = config.VENDOR_CA_DIR
     results = [update_host(h, dir_, max_depth=config.VENDOR_CA_MAX_DEPTH) for h in hosts]
     for r in results:

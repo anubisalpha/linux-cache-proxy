@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Certificates - Cache Proxy{% endblock %}
+{% block content %}
+  {% if msg %}<div class="{{ 'panel' if ok else 'warn' }}">{{ msg }}</div>{% endif %}
+
+  <div class="panel">
+    <strong>Proxy CA certificate</strong> &mdash; clients need to trust this to have their traffic
+    intercepted (browsing, package managers, Windows Update, ...). Importing it doesn't point a
+    client at this proxy by itself; that's still a separate proxy-setting change on the client.
+    <p style="margin:.5rem 0 0">
+      {% if ca_cert_exists %}
+        <a href="/ca-cert"><button type="button">Download CA certificate</button></a>
+        {% if ca_fingerprint %}
+          &nbsp; SHA-256: <code class="url">{{ ca_fingerprint }}</code>
+        {% endif %}
+      {% else %}
+        Not generated yet &mdash; <code>{{ ca_cert_file }}</code> doesn't exist. The proxy creates
+        it on first run.
+      {% endif %}
+    </p>
+    <p class="url" style="margin:.5rem 0 0">
+      Windows: double-click the downloaded file and import into <strong>Local Machine \ Trusted
+      Root Certification Authorities</strong> &mdash; not Current User, which system services
+      (Windows Update, Defender, ...) don't read from.
+    </p>
+  </div>
+
+  <div class="panel">
+    <strong>Vendor CA trust (upstream)</strong>
+    &mdash; {{ 'on' if tls_trust_enabled else 'OFF (set [tls_trust] enabled = true in config.toml)' }}
+    <p style="margin:.5rem 0 0">
+      Some vendors run their own certificate hierarchy outside the public web PKI (Windows Update's
+      is the first one found) &mdash; the proxy can't verify their real server's certificate without
+      being told to trust it specifically. Add a seed host below: the proxy connects to it, walks its
+      certificate chain to a verified self-signed root, and trusts whatever it finds. Refreshed daily;
+      "Refresh now" below forces an immediate re-check without waiting.
+    </p>
+    <form method="post" action="/certs/add" style="margin:.75rem 0 0">
+      <input type="text" name="host" placeholder="e.g. fe2cr.update.microsoft.com" style="width:280px">
+      <button type="submit">Add seed host</button>
+    </form>
+  </div>
+
+  <table>
+    <tr><th>Seed host</th><th>Source</th><th>CAs found</th><th>Last updated</th><th>Last error</th><th></th></tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.host }}</td>
+      <td>{{ 'config.toml' if r.from_config else 'added here' }}</td>
+      <td>{{ r.get('added') if r.get('ts') else '—' }}</td>
+      <td>{{ r['ts'] | datetime if r.get('ts') else 'never' }}</td>
+      <td>{{ r.get('last_error') or '' }}</td>
+      <td>
+        <form method="post" action="/certs/refresh/{{ r.host }}" style="display:inline">
+          <button type="submit" {{ 'disabled' if r.in_flight }}>{{ 'fetching…' if r.in_flight else 'Refresh now' }}</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6">No seed hosts configured yet.</td></tr>
+    {% endfor %}
+  </table>
+{% endblock %}

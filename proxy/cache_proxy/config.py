@@ -34,6 +34,14 @@ CATEGORIES_FILE = Path(
 BLOCKED_URL_PATTERNS_FILE = Path(
     os.environ.get("CACHE_PROXY_BLOCKED_URL_PATTERNS_FILE", CONFIG_PATH.parent / "blocked-url-patterns.conf")
 )
+# Seed hosts added from the web UI's Certificates page, one per line --
+# additive to [tls_trust] seed_hosts in config.toml, not a replacement for
+# it. Kept in its own file for the same reason CATEGORIES_FILE/
+# ALLOWED_HOSTS_FILE are: the web UI process can write this one file
+# without needing write access to config.toml itself.
+VENDOR_CA_EXTRA_SEED_HOSTS_FILE = Path(
+    os.environ.get("CACHE_PROXY_VENDOR_CA_EXTRA_SEED_HOSTS_FILE", CONFIG_PATH.parent / "vendor-ca-extra-seed-hosts.conf")
+)
 
 _DEFAULTS = {
     "cache": {
@@ -296,6 +304,14 @@ VENDOR_CA_DIR = Path(os.environ.get("CACHE_PROXY_VENDOR_CA_DIR", _cfg["tls_trust
 VENDOR_CA_SEED_HOSTS = list(_cfg["tls_trust"]["seed_hosts"])
 VENDOR_CA_MAX_DEPTH = int(_cfg["tls_trust"]["max_chain_depth"])
 
+# The mitmproxy CA cert the web UI's Certificates page offers for
+# download -- the same file set-test-proxy.sh-style client setup already
+# fetches by hand over SSH. mitmproxy writes several formats into confdir
+# on first run; .cer is the one that double-clicks straight into Windows'
+# certificate import wizard, which is who this download is mainly for.
+CA_CONFDIR = Path(os.environ.get("CACHE_PROXY_CONFDIR", "/var/lib/cache-proxy/mitmproxy-ca"))
+CA_CERT_FILE = CA_CONFDIR / "mitmproxy-ca-cert.cer"
+
 BLOCKPAGE_URL = os.environ.get("CACHE_PROXY_BLOCKPAGE_URL", _cfg["blockpage"]["url"]).rstrip("/")
 BLOCKPAGE_PORT = int(os.environ.get("CACHE_PROXY_BLOCKPAGE_PORT", _cfg["blockpage"]["port"]))
 BLOCKPAGE_MESSAGE = str(_cfg["blockpage"]["message"])
@@ -329,6 +345,65 @@ def _load_host_list(path: Path) -> list:
 
 NEVER_CACHE_HOSTS = _load_host_list(NEVER_CACHE_HOSTS_FILE)
 NEVER_INTERCEPT_HOSTS = _load_host_list(NEVER_INTERCEPT_HOSTS_FILE)
+
+
+def vendor_ca_seed_hosts() -> list:
+    """[tls_trust] seed_hosts from config.toml, plus anything the web UI's
+    Certificates page has added to VENDOR_CA_EXTRA_SEED_HOSTS_FILE. Read on
+    every call, same as block_categories() -- a host added from the UI is
+    picked up immediately, no restart, and by the next scheduled
+    cache-proxy-vendor-cas timer run too (a fresh process each day, so it
+    re-reads both sources from scratch regardless)."""
+    extra = _load_host_list(VENDOR_CA_EXTRA_SEED_HOSTS_FILE)
+    seen = set(VENDOR_CA_SEED_HOSTS)
+    return VENDOR_CA_SEED_HOSTS + [h for h in extra if h not in seen and not seen.add(h)]
+
+
+_HOSTNAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}\.)+[a-z]{2,63}$")
+
+
+def valid_hostname(host: str) -> bool:
+    return bool(_HOSTNAME_RE.match(host.strip().lower()))
+
+
+def add_vendor_ca_seed_host(host: str) -> bool:
+    """Persist a new seed host to VENDOR_CA_EXTRA_SEED_HOSTS_FILE, for the
+    web UI's Certificates page. True if it was newly added; False if it was
+    already known (either from config.toml or a previous UI addition) --
+    the caller can still trigger an immediate fetch either way, this only
+    reports whether the file changed.
+
+    Deliberately kept here rather than in vendorcas.py: vendorcas.py
+    imports `cryptography`, a proxy-venv-only dependency the web UI's own
+    venv doesn't have (see cache-webui.service vs. cache-proxy.service --
+    different venvs). The web UI writes the host list here and triggers
+    the actual fetch as a subprocess in the proxy venv; it never imports
+    vendorcas.py itself."""
+    host = host.strip().lower()
+    if host in vendor_ca_seed_hosts():
+        return False
+    path = VENDOR_CA_EXTRA_SEED_HOSTS_FILE
+    existing = path.read_text(encoding="utf-8") if path.exists() else (
+        "# Extra [tls_trust] seed hosts, added from the web UI's Certificates\n"
+        "# page. One hostname per line -- additive to config.toml's own\n"
+        "# seed_hosts list, not a replacement for it. Edited by hand is fine\n"
+        "# too; picked up within seconds, same as the other host-list files.\n"
+    )
+    if not existing.endswith("\n"):
+        existing += "\n"
+    path.write_text(existing + host + "\n", encoding="utf-8")
+    return True
+
+
+# The proxy venv's python, used by the web UI to run vendorcas.py as a
+# subprocess (see add_vendor_ca_seed_host's docstring for why it can't
+# just import that module directly). Falls back to whatever python is
+# already running when that path doesn't exist -- the test suite and any
+# single-venv dev setup both run everything under one interpreter.
+VENDORCAS_PYTHON = Path(os.environ.get("CACHE_PROXY_VENDORCAS_PYTHON", "/opt/cache-proxy/venv-proxy/bin/python3"))
+if not VENDORCAS_PYTHON.exists():
+    import sys
+    VENDORCAS_PYTHON = Path(sys.executable)
 
 
 def host_matches(hostname: str, patterns: list) -> bool:

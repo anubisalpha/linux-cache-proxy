@@ -69,3 +69,67 @@ def test_host_to_regex_strips_wildcard_prefix():
     pattern = config.host_to_regex("*.example.com")
     assert re.search(pattern, "example.com")
     assert re.search(pattern, "download.example.com")
+
+
+# ---- vendor_ca_seed_hosts / add_vendor_ca_seed_host (web UI Certificates page) ---
+
+def test_vendor_ca_seed_hosts_merges_toml_and_extra_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "VENDOR_CA_SEED_HOSTS", ["fromtoml.example.com"])
+    extra = tmp_path / "extra.conf"
+    extra.write_text("fromui.example.com\n")
+    monkeypatch.setattr(config, "VENDOR_CA_EXTRA_SEED_HOSTS_FILE", extra)
+    assert config.vendor_ca_seed_hosts() == ["fromtoml.example.com", "fromui.example.com"]
+
+
+def test_vendor_ca_seed_hosts_dedupes_across_both_sources(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "VENDOR_CA_SEED_HOSTS", ["dup.example.com"])
+    extra = tmp_path / "extra.conf"
+    extra.write_text("dup.example.com\nnew.example.com\n")
+    monkeypatch.setattr(config, "VENDOR_CA_EXTRA_SEED_HOSTS_FILE", extra)
+    assert config.vendor_ca_seed_hosts() == ["dup.example.com", "new.example.com"]
+
+
+def test_vendor_ca_seed_hosts_no_extra_file_yet(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "VENDOR_CA_SEED_HOSTS", ["fromtoml.example.com"])
+    monkeypatch.setattr(config, "VENDOR_CA_EXTRA_SEED_HOSTS_FILE", tmp_path / "does-not-exist.conf")
+    assert config.vendor_ca_seed_hosts() == ["fromtoml.example.com"]
+
+
+def test_valid_hostname_accepts_real_hostnames():
+    assert config.valid_hostname("example.com")
+    assert config.valid_hostname("fe2cr.update.microsoft.com")
+    assert config.valid_hostname("  Example.COM  ")  # whitespace/case tolerated
+
+
+def test_valid_hostname_rejects_garbage():
+    assert not config.valid_hostname("")
+    assert not config.valid_hostname("not a hostname")
+    assert not config.valid_hostname("no-dot")
+    assert not config.valid_hostname("http://example.com")
+    assert not config.valid_hostname("example.com; rm -rf /")
+
+
+def test_add_vendor_ca_seed_host_persists_and_reports_new(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "VENDOR_CA_SEED_HOSTS", [])
+    extra = tmp_path / "extra.conf"
+    monkeypatch.setattr(config, "VENDOR_CA_EXTRA_SEED_HOSTS_FILE", extra)
+    assert config.add_vendor_ca_seed_host("New.Example.com") is True
+    assert "new.example.com" in extra.read_text()
+    assert config.vendor_ca_seed_hosts() == ["new.example.com"]
+
+
+def test_add_vendor_ca_seed_host_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "VENDOR_CA_SEED_HOSTS", [])
+    extra = tmp_path / "extra.conf"
+    monkeypatch.setattr(config, "VENDOR_CA_EXTRA_SEED_HOSTS_FILE", extra)
+    assert config.add_vendor_ca_seed_host("example.com") is True
+    assert config.add_vendor_ca_seed_host("example.com") is False
+    assert config.vendor_ca_seed_hosts() == ["example.com"]  # not duplicated
+
+
+def test_add_vendor_ca_seed_host_already_in_toml(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "VENDOR_CA_SEED_HOSTS", ["example.com"])
+    extra = tmp_path / "extra.conf"
+    monkeypatch.setattr(config, "VENDOR_CA_EXTRA_SEED_HOSTS_FILE", extra)
+    assert config.add_vendor_ca_seed_host("example.com") is False
+    assert not extra.exists()  # nothing written -- already known from config.toml

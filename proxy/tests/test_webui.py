@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -284,3 +285,127 @@ def test_summary_counts_download_hits_only_but_lists_asset_hits(webui_server):
     assert "0 download hits" in body  # a.exe has none; the 42 asset hits aren't folded in
     row = body.split("app.js</a>", 1)[1].split("</tr>", 1)[0]
     assert "<td>42</td>" in row  # ...but the file's own Hits column shows them
+
+
+# ---- Certificates page ------------------------------------------------------
+
+@pytest.fixture
+def certs_env(seeded_env, tmp_path):
+    seeded_env["CACHE_PROXY_VENDOR_CA_EXTRA_SEED_HOSTS_FILE"] = str(tmp_path / "extra-seed-hosts.conf")
+    seeded_env["CACHE_PROXY_VENDOR_CA_DIR"] = str(tmp_path / "vendor-cas")
+    seeded_env["CACHE_PROXY_CONFDIR"] = str(tmp_path / "mitmproxy-ca")
+    # Deliberately a path that doesn't exist: subprocess.run fails fast
+    # (FileNotFoundError, caught and logged) instead of the background
+    # fetch actually trying real network I/O against a fake test
+    # hostname. These tests cover the web UI's own behaviour (persist +
+    # redirect); the fetch itself is covered by test_vendorcas.py.
+    seeded_env["CACHE_PROXY_VENDORCAS_PYTHON"] = str(tmp_path / "no-such-python")
+    return seeded_env
+
+
+@pytest.fixture
+def certs_server(certs_env):
+    port = _free_port()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "cache_proxy.webui.app:app", "--port", str(port)],
+        cwd=PROXY_ROOT, env=certs_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    base = f"http://127.0.0.1:{port}"
+    for _ in range(50):
+        try:
+            _get(base + "/")
+            break
+        except (urllib.error.URLError, ConnectionError):
+            time.sleep(0.1)
+    else:
+        proc.terminate()
+        raise RuntimeError("webui did not start:\n" + proc.stdout.read().decode(errors="replace"))
+    yield base, certs_env
+    proc.terminate()
+    proc.wait(timeout=5)
+
+
+def _post(url: str, form: dict | None = None):
+    headers = _auth_header()
+    data = None
+    if form is not None:
+        data = urllib.parse.urlencode(form).encode()
+        headers = {**headers, "Content-Type": "application/x-www-form-urlencoded"}
+    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    return urllib.request.build_opener(urllib.request.HTTPRedirectHandler()).open(req)
+
+
+def test_certs_page_lists_seed_hosts(certs_server):
+    base, env = certs_server
+    body = _get(base + "/certs").read().decode()
+    assert "fe2cr.update.microsoft.com" in body
+    assert "tas02.sls.update.microsoft.com" in body
+    assert "Vendor CA trust" in body
+
+
+def test_certs_page_shows_vendor_ca_status(certs_server):
+    base, env = certs_server
+    vendor_dir = Path(env["CACHE_PROXY_VENDOR_CA_DIR"])
+    vendor_dir.mkdir(parents=True)
+    (vendor_dir / "status.json").write_text(__import__("json").dumps({
+        "fe2cr.update.microsoft.com": {"ts": time.time(), "added": 2, "last_error": None},
+    }))
+    body = _get(base + "/certs").read().decode()
+    # split on the <td> cell specifically -- "fe2cr.update.microsoft.com"
+    # alone also appears earlier, in the add-host form's placeholder text
+    row = body.split("<td>fe2cr.update.microsoft.com</td>", 1)[1].split("</tr>", 1)[0]
+    assert "<td>2</td>" in row
+
+
+def test_ca_cert_download_missing_redirects_with_message(certs_server):
+    base, env = certs_server
+    body = _get(base + "/ca-cert").read().decode()
+    assert "doesn&#39;t exist yet" in body or "doesn't exist yet" in body
+
+
+def test_ca_cert_download_serves_file(certs_server):
+    base, env = certs_server
+    confdir = Path(env["CACHE_PROXY_CONFDIR"])
+    confdir.mkdir(parents=True)
+    cert_bytes = b"-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n"
+    (confdir / "mitmproxy-ca-cert.cer").write_bytes(cert_bytes)
+    resp = _get(base + "/ca-cert")
+    assert resp.status == 200
+    assert resp.read() == cert_bytes
+    assert "attachment" in resp.headers.get("Content-Disposition", "")
+    assert resp.headers.get("Content-Type") == "application/x-x509-ca-cert"
+
+
+def test_certs_add_persists_host_and_redirects_ok(certs_server):
+    base, env = certs_server
+    _post(base + "/certs/add", {"host": "new-vendor.example.com"})
+    body = _get(base + "/certs").read().decode()
+    assert "new-vendor.example.com" in body
+    assert "new-vendor.example.com" in Path(env["CACHE_PROXY_VENDOR_CA_EXTRA_SEED_HOSTS_FILE"]).read_text()
+
+
+def test_certs_add_rejects_invalid_hostname(certs_server):
+    base, env = certs_server
+    body = _post(base + "/certs/add", {"host": "not a hostname"}).read().decode()
+    assert "doesn&#39;t look like a valid hostname" in body or "doesn't look like a valid hostname" in body
+    extra = Path(env["CACHE_PROXY_VENDOR_CA_EXTRA_SEED_HOSTS_FILE"])
+    assert not extra.exists()
+
+
+def test_certs_add_requires_a_host(certs_server):
+    base, env = certs_server
+    body = _post(base + "/certs/add", {"host": ""}).read().decode()
+    assert "Enter a hostname" in body
+
+
+def test_certs_add_duplicate_reports_already_known(certs_server):
+    base, env = certs_server
+    _post(base + "/certs/add", {"host": "dup.example.com"})
+    body = _post(base + "/certs/add", {"host": "dup.example.com"}).read().decode()
+    assert "already known" in body
+
+
+def test_certs_refresh_existing_host_redirects_ok(certs_server):
+    base, env = certs_server
+    body = _post(base + "/certs/refresh/fe2cr.update.microsoft.com").read().decode()
+    assert "Refreshing fe2cr.update.microsoft.com now" in body
