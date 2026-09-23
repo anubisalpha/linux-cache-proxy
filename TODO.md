@@ -1,5 +1,32 @@
 # TODO
 
+## Push alerts for real errors, not just usage anomalies (2026-09-23)
+
+Right now the only way to find a real breakage is someone manually reading
+`journalctl -u cache-proxy`. That's exactly how today's two real bugs were
+found: fc's ClamAV CA silently never persisting (552 failed TLS handshakes
+over 48h before anyone noticed), and Docker Desktop's MCP toolkit sending a
+malformed `Authorization: Bearer ` header that mitmproxy's HTTP/2 layer
+rejects outright. Neither would have surfaced without someone asking.
+
+**Decided (2026-09-23), not yet built:** a scheduled scan on CT 914,
+same pattern as the existing `cache-proxy-lists*` timers, that tails the
+journal for the error classes actually seen so far and emails a digest via
+the internal relay (172.16.2.25:25, see `reference_email_smtp.md`) —
+**only when something NEW appears**, not on every run, so it doesn't
+become noise. Needs a small state file (e.g. hash of seen error
+signatures) to dedupe recurring errors from genuinely new ones.
+
+Error classes to watch for, from what's actually happened:
+- `Client TLS handshake failed... tlsv1 alert unknown ca` (fc's CA bug)
+- `HTTP/2 protocol error` (mcp.docker.com's malformed header)
+- `Addon error` / unhandled `Traceback` in the mitmproxy addon itself
+
+This is a different problem from the "Push alerts for abnormal usage" item
+below (volume/anomaly, not correctness) but should probably share the same
+delivery mechanism once both exist — no need to build two separate email
+pipelines.
+
 ## Push alerts for abnormal usage
 
 `/stats` and `/api/hourly-stats` flag clients whose current hour is well

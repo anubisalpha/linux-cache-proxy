@@ -10,10 +10,11 @@ db = "/var/lib/cache-proxy/index.db"
 # responses that happen to carry a cacheable content-type).
 min_size_mb = 1
 
-# Extensions exempt from min_size_mb -- Linux package-manager files. A
-# 50 KB .deb is still a real, repeatable download worth caching, not the
-# kind of tiny fragment min_size_mb exists to filter out.
-no_min_size_extensions = [".deb", ".udeb", ".rpm"]
+# Extensions exempt from min_size_mb -- package-manager and OS-update
+# files. A 50 KB .deb (or a 7 KB Windows Update .cab) is still a real,
+# repeatable download worth caching, not the kind of tiny fragment
+# min_size_mb exists to filter out.
+no_min_size_extensions = [".deb", ".udeb", ".rpm", ".cab", ".msu", ".psf", ".esd"]
 
 # Cap on how large a single file this will buffer in memory before writing
 # it to disk. Anything bigger streams straight through uncached rather
