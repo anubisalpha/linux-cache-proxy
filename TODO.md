@@ -1,10 +1,14 @@
 # TODO
 
-## Web UI facility for managing certificates (2026-09-23)
+## ~~Web UI facility for managing certificates~~ — done 2026-09-23 (`7d8f902`)
 
-Today's session (see `Projects\linux-cache-proxy-wfc\memory\project_linux_cache_proxy.md`
-for the full detail) involved a lot of manual, SSH-only certificate
-wrangling:
+New `/certs` page: downloads the mitmproxy CA cert directly, lists vendor-CA
+seed host status with a "Refresh now" button, and a form to add a new seed
+host (persisted live, no restart, no config.toml edit needed). Went behind
+the existing web UI auth, per the option below that was left open. Full
+writeup: `Projects\linux-cache-proxy-wfc\memory\project_linux_cache_proxy.md`.
+
+Original notes kept below for context on why this was built:
 
 - Fetching the mitmproxy CA cert off the box by hand (`ssh ... cat
   /var/lib/cache-proxy/mitmproxy-ca/mitmproxy-ca-cert.cer`) to embed in
