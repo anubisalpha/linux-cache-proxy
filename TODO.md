@@ -1,5 +1,41 @@
 # TODO
 
+## Web UI facility for managing certificates (2026-09-23)
+
+Today's session (see `Projects\linux-cache-proxy-wfc\memory\project_linux_cache_proxy.md`
+for the full detail) involved a lot of manual, SSH-only certificate
+wrangling:
+
+- Fetching the mitmproxy CA cert off the box by hand (`ssh ... cat
+  /var/lib/cache-proxy/mitmproxy-ca/mitmproxy-ca-cert.cer`) to embed in
+  `set-test-proxy.sh`, then re-fetching and re-embedding whenever the CA
+  regenerates.
+- Discovering fc's CA never actually persisted on one client, invisible
+  until someone went looking at the failure symptom days later.
+- Manually editing `config.toml`'s `[tls_trust] seed_hosts` over SSH and
+  running `python -m cache_proxy.vendorcas update --host <x>` by hand to
+  force an immediate vendor-CA fetch, rather than waiting for the daily
+  timer.
+- Windows clients needing the CA cert downloaded and manually imported
+  into the right store (`LocalMachine\Root`, not just `CurrentUser\Root`
+  — a mistake made more than once this session), with no guided path.
+
+**Idea, not yet designed:** let the web UI itself serve and manage
+certificates instead of everything being an SSH/SCP round-trip:
+- A **download link for the current mitmproxy CA cert** (`.crt`/`.cer`),
+  so a new client (especially a Windows one, where the whole
+  double-click-and-import flow already exists) doesn't need anyone to SSH
+  in and fetch it manually. Solves the exact "which store did I import it
+  into" confusion hit twice today.
+- A page showing **vendor-CA seed host status** (host, last successful
+  fetch, cert count, last error) — currently only visible via `python -m
+  cache_proxy.vendorcas status` over SSH — plus a button to add a seed
+  host and trigger an immediate fetch, instead of editing `config.toml`
+  by hand and waiting for (or manually invoking) the daily timer.
+- Worth considering whether this belongs behind the same auth the rest of
+  the web UI already has, or needs something more restrictive given it's
+  effectively trust-store administration.
+
 ## Push alerts for real errors, not just usage anomalies (2026-09-23)
 
 Right now the only way to find a real breakage is someone manually reading
