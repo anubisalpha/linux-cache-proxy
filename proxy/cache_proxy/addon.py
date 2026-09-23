@@ -554,7 +554,9 @@ class CacheAddon:
         data = flow.response.content
         if not data:
             return
-        if kind == "download" and len(data) < config.MIN_CACHE_SIZE:
+        path = flow.request.pretty_url.split("?")[0].lower()
+        is_package_file = any(path.endswith(ext) for ext in config.NO_MIN_SIZE_EXTENSIONS)
+        if kind == "download" and len(data) < config.MIN_CACHE_SIZE and not is_package_file:
             return
         limit = config.WEBCACHE_MAX_SIZE if kind == "asset" else config.MAX_BUFFER_SIZE
         if len(data) > limit:

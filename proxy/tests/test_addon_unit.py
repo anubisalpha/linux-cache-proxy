@@ -142,6 +142,86 @@ def test_ordinary_host_still_caches_when_exclusion_list_nonempty(tmp_path, monke
     a.response(flow)
     assert len(store.list_entries()) == 1
 
+
+def test_small_download_is_skipped_by_min_size(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "files")
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "index.db")
+    store.init_db()
+
+    a = addon.CacheAddon()
+    a.load(loader=None)
+
+    flow = _fake_flow("https://example.com/small.exe")
+    flow.response.headers = {"Content-Type": "application/x-msdownload"}
+    flow.response.status_code = 200
+    flow.response.stream = False
+    flow.response.content = b"x" * (config.MIN_CACHE_SIZE - 1)
+    flow.request.path = "/small.exe"
+
+    a.response(flow)
+    assert store.list_entries() == []
+
+
+def test_small_deb_is_cached_despite_min_size(tmp_path, monkeypatch):
+    """apt upgrades are mostly small .deb files -- these must not be
+    filtered out by the same floor that skips favicons/redirects."""
+    monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "files")
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "index.db")
+    store.init_db()
+
+    a = addon.CacheAddon()
+    a.load(loader=None)
+
+    flow = _fake_flow("https://gb.archive.ubuntu.com/ubuntu/pool/main/h/htop/htop.deb")
+    flow.response.headers = {"Content-Type": "application/x-debian-package"}
+    flow.response.status_code = 200
+    flow.response.stream = False
+    flow.response.content = b"x" * (config.MIN_CACHE_SIZE - 1)
+    flow.request.path = "/ubuntu/pool/main/h/htop/htop.deb"
+
+    a.response(flow)
+    assert len(store.list_entries()) == 1
+
+
+def test_small_rpm_is_cached_despite_min_size(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "files")
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "index.db")
+    store.init_db()
+
+    a = addon.CacheAddon()
+    a.load(loader=None)
+
+    flow = _fake_flow("https://mirror.example.com/pkgs/tool.rpm")
+    flow.response.headers = {"Content-Type": "application/x-rpm"}
+    flow.response.status_code = 200
+    flow.response.stream = False
+    flow.response.content = b"x" * (config.MIN_CACHE_SIZE - 1)
+    flow.request.path = "/pkgs/tool.rpm"
+
+    a.response(flow)
+    assert len(store.list_entries()) == 1
+
+
+def test_small_deb_still_respects_other_exclusions(tmp_path, monkeypatch):
+    """The min_size exemption must not bypass never-cache-hosts."""
+    monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "files")
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "index.db")
+    monkeypatch.setattr(config, "NEVER_CACHE_HOSTS", ["internal-crm.example.com"])
+    store.init_db()
+
+    a = addon.CacheAddon()
+    a.load(loader=None)
+
+    flow = _fake_flow("https://internal-crm.example.com/tool.deb")
+    flow.response.headers = {"Content-Type": "application/x-debian-package"}
+    flow.response.status_code = 200
+    flow.response.stream = False
+    flow.response.content = b"x" * (config.MIN_CACHE_SIZE - 1)
+    flow.request.path = "/tool.deb"
+
+    a.response(flow)
+    assert store.list_entries() == []
+
 # --- hourly traffic metering ----------------------------------------------
 # _bump_hourly() meters every response, including the streamed ones that
 # access_log never sees. It must never raise: metering may not break a

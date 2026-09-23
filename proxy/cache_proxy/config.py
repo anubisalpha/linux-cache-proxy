@@ -40,6 +40,11 @@ _DEFAULTS = {
         "dir": "/var/lib/cache-proxy/files",
         "db": "/var/lib/cache-proxy/index.db",
         "min_size_mb": 1,
+        # Package-manager files (Linux distro updates) are cached regardless
+        # of min_size_mb -- a 50 KB .deb is still a real, repeatable,
+        # worth-deduplicating download, not the kind of tiny fragment
+        # min_size_mb exists to filter out.
+        "no_min_size_extensions": [".deb", ".udeb", ".rpm"],
         "max_buffer_size_mb": 512,
         # How long a cached download is served before it's refetched.
         "download_ttl_days": 30,
@@ -245,6 +250,7 @@ RETENTION_DAYS = int(_cfg["analytics"]["retention_days"])
 
 CACHEABLE_EXTENSIONS = set(_cfg["cache"]["extensions"])
 CACHEABLE_CONTENT_TYPES = set(_cfg["cache"]["content_types"])
+NO_MIN_SIZE_EXTENSIONS = set(_cfg["cache"]["no_min_size_extensions"])
 
 FILTERING_ENABLED = os.environ.get("CACHE_PROXY_FILTERING", str(_cfg["filtering"]["enabled"])).lower() in ("1", "true", "yes")
 FILTER_LISTS_DIR = Path(os.environ.get("CACHE_PROXY_LISTS_DIR", _cfg["filtering"]["lists_dir"]))
