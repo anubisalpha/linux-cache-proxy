@@ -107,6 +107,16 @@ min_history_hours = 6
 lookback_hours = 168
 retention_days = 90
 
+# Volume-only metering (connection count + byte count, per client per hour,
+# alongside everything else in /stats) for hosts in
+# never-intercept-hosts.conf. mitmproxy never decrypts these connections --
+# this only ever reads the length of each encrypted TCP message, never its
+# content, and never the hostname or path. Turns on mitmproxy's own
+# show_ignored_hosts option, whose own docs warn it keeps each ignored
+# flow's messages in memory; the addon clears them immediately after
+# reading the length of the latest one.
+meter_ignored_hosts = true
+
 # Content filtering. Off until enabled = true (then restart cache-proxy).
 # Category lists are downloaded daily into /var/lib/cache-proxy/filter-lists
 # (separate from /etc) by the cache-proxy-lists timer; only the categories

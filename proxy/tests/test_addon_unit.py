@@ -296,3 +296,95 @@ def test_bump_hourly_sums_within_the_same_hour():
 
     assert len(a._hourly) == 1
     assert next(iter(a._hourly.values())) == [2, 350]
+
+
+# --- never-intercept host metering (volume only, never content) -----------
+# mitmproxy never decrypts these connections. tcp_message must only ever
+# read len(message.content), never store or forward the content itself,
+# and must clear flow.messages afterwards -- show_ignored_hosts keeps every
+# message in memory for the life of the connection otherwise (its own docs
+# call this out as a real memory-usage risk).
+
+def _fake_tcp_flow(client_ip="10.0.0.5", messages=None):
+    flow = MagicMock()
+    flow.client_conn.peername = (client_ip, 12345)
+    flow.messages = messages if messages is not None else []
+    return flow
+
+
+def _msg(content: bytes):
+    m = MagicMock()
+    m.content = content
+    return m
+
+
+def test_tcp_message_tallies_bytes_and_clears_messages():
+    a = _hourly_addon()
+    flow = _fake_tcp_flow(messages=[_msg(b"x" * 100)])
+
+    a.tcp_message(flow)
+
+    (ip, _hour), tally = next(iter(a._hourly.items()))
+    assert ip == "10.0.0.5"
+    assert tally == [0, 100]  # tcp_message never counts a "request" itself
+    assert flow.messages == []
+
+
+def test_tcp_message_only_tallies_the_latest_message():
+    """flow.messages accumulates the whole connection's history; only the
+    newest entry is this event's actual delta."""
+    a = _hourly_addon()
+    flow = _fake_tcp_flow(messages=[_msg(b"a" * 50), _msg(b"b" * 30)])
+
+    a.tcp_message(flow)
+
+    assert next(iter(a._hourly.values())) == [0, 30]
+
+
+def test_tcp_message_with_no_messages_is_a_noop():
+    a = _hourly_addon()
+    flow = _fake_tcp_flow(messages=[])
+
+    a.tcp_message(flow)  # must not raise
+    assert a._hourly == {}
+
+
+def test_tcp_message_swallows_unexpected_errors():
+    a = _hourly_addon()
+    flow = _fake_tcp_flow()
+    bad_msg = MagicMock()
+    type(bad_msg).content = property(lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+    flow.messages = [bad_msg]
+
+    a.tcp_message(flow)  # must not raise
+    assert a._hourly == {}
+    assert flow.messages == []  # still cleared -- the tally failed, not the cleanup
+
+
+def test_tcp_end_counts_the_connection_once():
+    a = _hourly_addon()
+    flow = _fake_tcp_flow()
+
+    a.tcp_end(flow)
+
+    assert next(iter(a._hourly.values())) == [1, 0]
+
+
+def test_tcp_error_also_counts_the_connection():
+    a = _hourly_addon()
+    flow = _fake_tcp_flow()
+
+    a.tcp_error(flow)
+
+    assert next(iter(a._hourly.values())) == [1, 0]
+
+
+def test_metering_disabled_skips_tcp_hooks(monkeypatch):
+    monkeypatch.setattr(config, "METER_IGNORED_HOSTS", False)
+    a = _hourly_addon()
+    flow = _fake_tcp_flow(messages=[_msg(b"x" * 100)])
+
+    a.tcp_message(flow)
+    a.tcp_end(flow)
+
+    assert a._hourly == {}

@@ -107,6 +107,15 @@ _DEFAULTS = {
         "min_history_hours": 6,
         "lookback_hours": 168,
         "retention_days": 90,
+        # Volume-only metering (connection count + byte count, per client per
+        # hour) for hosts in never-intercept-hosts.conf. mitmproxy never
+        # decrypts these connections; this reads the length of each
+        # encrypted TCP message, never its content, and turns on
+        # mitmproxy's own show_ignored_hosts option to get a flow object
+        # for them at all -- that option's own docs warn it holds each
+        # ignored flow's messages in memory, so the addon must clear them
+        # after tallying (see CacheAddon.tcp_message).
+        "meter_ignored_hosts": True,
     },
     # Content filtering. Downloaded category lists live under lists_dir (kept
     # apart from /etc); the small hand-edited override files stay in /etc.
@@ -247,6 +256,9 @@ ANOMALY_FACTOR = float(_cfg["analytics"]["anomaly_factor"])
 MIN_HISTORY_HOURS = int(_cfg["analytics"]["min_history_hours"])
 LOOKBACK_HOURS = int(_cfg["analytics"]["lookback_hours"])
 RETENTION_DAYS = int(_cfg["analytics"]["retention_days"])
+METER_IGNORED_HOSTS = os.environ.get(
+    "CACHE_PROXY_METER_IGNORED_HOSTS", str(_cfg["analytics"]["meter_ignored_hosts"])
+).lower() in ("1", "true", "yes")
 
 CACHEABLE_EXTENSIONS = set(_cfg["cache"]["extensions"])
 CACHEABLE_CONTENT_TYPES = set(_cfg["cache"]["content_types"])

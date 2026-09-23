@@ -23,7 +23,7 @@ import time
 from typing import Optional
 from urllib.parse import urlsplit
 
-from mitmproxy import http
+from mitmproxy import http, tcp
 
 # mitmdump loads this file as a standalone script (not as part of the
 # cache_proxy package), so relative imports don't work here. Make the
@@ -535,6 +535,51 @@ class CacheAddon:
         finally:
             self._release(flow.id)
 
+    # ---- never-intercept hosts: volume-only metering -----------------------
+    #
+    # A host in never-intercept-hosts.conf is never TLS-terminated, so these
+    # hooks only ever see raw ciphertext -- mitmproxy's show_ignored_hosts
+    # option (set in run_proxy.sh) is what makes a flow exist for these
+    # connections at all; without it tcp_start/tcp_message/tcp_end never
+    # fire and the connection is fully invisible, as it was before this
+    # feature. Only byte/connection counts are ever read here -- never
+    # flow.messages[*].content itself, and never the hostname or path.
+
+    def tcp_message(self, flow: tcp.TCPFlow) -> None:
+        if not config.METER_IGNORED_HOSTS or not flow.messages:
+            return
+        try:
+            size = len(flow.messages[-1].content)
+            key = (_client_ip(flow), int(time.time()) // 3600 * 3600)
+            cur = self._hourly.setdefault(key, [0, 0])
+            cur[1] += size
+        except Exception as e:
+            logger.debug("tcp traffic tally skipped: %s", e)
+        finally:
+            # show_ignored_hosts keeps every message for the life of the
+            # connection unless an addon clears it -- the option's own
+            # docs warn this "can greatly increase memory usage". We only
+            # ever need this message's length, already read above.
+            flow.messages.clear()
+
+    def tcp_end(self, flow: tcp.TCPFlow) -> None:
+        self._bump_tcp_connection(flow)
+
+    def tcp_error(self, flow: tcp.TCPFlow) -> None:
+        self._bump_tcp_connection(flow)
+
+    def _bump_tcp_connection(self, flow: tcp.TCPFlow) -> None:
+        """Count the connection itself as one 'request', same unit
+        _bump_hourly uses for an HTTP response."""
+        if not config.METER_IGNORED_HOSTS:
+            return
+        try:
+            key = (_client_ip(flow), int(time.time()) // 3600 * 3600)
+            cur = self._hourly.setdefault(key, [0, 0])
+            cur[0] += 1
+        except Exception as e:
+            logger.debug("tcp traffic tally skipped: %s", e)
+
     def _store_response(self, flow: http.HTTPFlow) -> None:
         if flow.response is None or flow.request.method != "GET":
             return
@@ -650,7 +695,7 @@ def _classify(flow: http.HTTPFlow, response: http.Response) -> Optional[tuple]:
     return None
 
 
-def _client_ip(flow: http.HTTPFlow) -> str:
+def _client_ip(flow) -> str:
     peername = flow.client_conn.peername
     return peername[0] if peername else "unknown"
 

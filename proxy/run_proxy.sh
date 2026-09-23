@@ -35,6 +35,14 @@ for h in config.NEVER_INTERCEPT_HOSTS:
     print(config.host_to_regex(h))
 ")
 
+# show_ignored_hosts makes mitmproxy create a (still-undecrypted) flow for
+# never-intercept-hosts.conf traffic, so tcp_start/tcp_message/tcp_end fire
+# and addon.py can tally connection/byte counts -- content stays invisible,
+# mitmproxy never terminates TLS for these hosts either way. Off entirely
+# skips this: the connection is then exactly as invisible as before this
+# feature existed.
+SHOW_IGNORED_HOSTS="$(python3 -c 'from cache_proxy import config; print("true" if config.METER_IGNORED_HOSTS else "false")')"
+
 # The supervisor runs a pool of mitmdump workers sharing the listen port
 # (min/max in config.toml [proxy]); everything below is passed to each one.
 exec python3 -m cache_proxy.supervisor \
@@ -42,5 +50,6 @@ exec python3 -m cache_proxy.supervisor \
   --set confdir="${CACHE_PROXY_CONFDIR:-/var/lib/cache-proxy/mitmproxy-ca}" \
   --set ssl_verify_upstream_trusted_ca="$CERTIFI_BUNDLE" \
   --set ssl_verify_upstream_trusted_confdir="$CACHE_PROXY_VENDOR_CA_DIR" \
+  --set show_ignored_hosts="$SHOW_IGNORED_HOSTS" \
   "${IGNORE_HOSTS_ARGS[@]}" \
   -s cache_proxy/addon.py
